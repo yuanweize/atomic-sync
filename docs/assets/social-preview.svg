@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Atomic Sync</title><desc id="desc">Branch-aware media archive orchestration.</desc>
+  <defs><radialGradient id="bg" cx="72%" cy="5%" r="90%"><stop stop-color="#30286A"/><stop offset=".55" stop-color="#0D1222"/><stop offset="1" stop-color="#080B13"/></radialGradient><linearGradient id="g" x1="130" y1="120" x2="450" y2="490"><stop stop-color="#A69CFF"/><stop offset=".52" stop-color="#6C5CE7"/><stop offset="1" stop-color="#24D6B6"/></linearGradient><filter id="blur"><feGaussianBlur stdDeviation="18"/></filter></defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <circle cx="286" cy="320" r="166" fill="#11182B" stroke="#fff" stroke-opacity=".09" stroke-width="3"/>
+  <circle cx="286" cy="320" r="111" fill="none" stroke="url(#g)" stroke-width="14" stroke-dasharray="132 45" transform="rotate(-28 286 320)"/>
+  <ellipse cx="286" cy="320" rx="150" ry="65" fill="none" stroke="url(#g)" stroke-width="10" stroke-opacity=".7" transform="rotate(38 286 320)"/>
+  <circle cx="388" cy="228" r="18" fill="#8B7CFF"/><circle cx="184" cy="382" r="16" fill="#24D6B6"/>
+  <circle cx="286" cy="320" r="60" fill="url(#g)" opacity=".24" filter="url(#blur)"/>
+  <path d="M221 328h110l-29-29 20-20 62 62-62 62-20-20 31-31H221z" fill="url(#g)"/><path d="M351 312H241l29-29-20-20-62 62 62 62 20-20-31-31h112z" fill="#F6F7FB" fill-opacity=".9"/>
+  <text x="500" y="291" fill="#F6F7FB" font-family="Inter,Arial,sans-serif" font-size="92" font-weight="780" letter-spacing="-5">Atomic Sync</text>
+  <text x="506" y="355" fill="#B6BDD0" font-family="Inter,Arial,sans-serif" font-size="29" font-weight="560">Branch-aware media archive orchestration</text>
+  <text x="508" y="416" fill="#8174F8" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="800" letter-spacing="5">STAGE · VERIFY · PUBLISH</text>
+</svg>

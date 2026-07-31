@@ -1,0 +1,16 @@
+/atomic-sync
+/data/
+/source/
+/rclone/
+**/rclone.conf
+/web/node_modules/
+/web/dist/
+.env
+.env.*
+!.env.example
+.DS_Store
+coverage.out
+coverage.html
+*.db
+*.db-shm
+*.db-wal

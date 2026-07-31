@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.12"
+  REGISTRY: ghcr.io
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Require the tag commit to belong to main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve release metadata
+        id: release
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must be vMAJOR.MINOR.PATCH"; exit 1; }
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-architecture image
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.release.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.release.outputs.built_at }}
+          tags: |
+            ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
+            ${{ steps.release.outputs.image }}:latest
+            ${{ steps.release.outputs.image }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.release.outputs.built_at }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
+
+      - name: Sign image digest
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Make GHCR package public and verify anonymous access
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.release.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          package="${GITHUB_REPOSITORY#*/}"
+          gh api --method PATCH "/user/packages/container/${package,,}/visibility" -f visibility=public
+          docker logout ghcr.io
+          docker buildx imagetools inspect "${IMAGE}@${DIGEST}"
+
+      - name: Build release binaries and checksums
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ steps.release.outputs.built_at }}
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags="-s -w -X github.com/yuanweize/atomic-sync/internal/buildinfo.Version=${VERSION} -X github.com/yuanweize/atomic-sync/internal/buildinfo.Commit=${COMMIT} -X github.com/yuanweize/atomic-sync/internal/buildinfo.Date=${BUILD_DATE}" \
+              -o "dist/atomic-sync_${VERSION}_linux_${arch}" ./cmd/atomic-sync
+          done
+          cd dist
+          sha256sum atomic-sync_* > SHA256SUMS
+
+      - name: Record immutable image digest
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: printf '%s@%s\n' "$IMAGE" "$DIGEST" > dist/image-digest.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "Atomic Sync $GITHUB_REF_NAME"

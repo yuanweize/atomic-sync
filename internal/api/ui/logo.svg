@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Atomic Sync">
+  <defs><linearGradient id="g" x1="8" y1="7" x2="56" y2="58" gradientUnits="userSpaceOnUse"><stop stop-color="#9A8CFF"/><stop offset=".5" stop-color="#6C5CE7"/><stop offset="1" stop-color="#24D6B6"/></linearGradient><filter id="s"><feGaussianBlur stdDeviation="2.4"/></filter></defs>
+  <circle cx="32" cy="32" r="27" fill="#11162A" stroke="#FFFFFF" stroke-opacity=".12"/>
+  <circle cx="32" cy="32" r="18" fill="none" stroke="url(#g)" stroke-width="2.5" stroke-dasharray="22 8" transform="rotate(-28 32 32)"/>
+  <ellipse cx="32" cy="32" rx="25" ry="11" fill="none" stroke="url(#g)" stroke-width="2" stroke-opacity=".8" transform="rotate(38 32 32)"/>
+  <circle cx="48" cy="18" r="3.2" fill="#8B7CFF"/><circle cx="16" cy="42" r="2.8" fill="#24D6B6"/>
+  <circle cx="32" cy="32" r="9" fill="url(#g)" opacity=".28" filter="url(#s)"/><path d="M23 33.5h14.2l-4.1-4.1 2.8-2.8L45 35.7l-9.1 9.1-2.8-2.8 4.5-4.5H23z" fill="url(#g)"/><path d="M41 30.5H26.8l4.1-4.1-2.8-2.8-9.1 9.1 9.1 9.1 2.8-2.8-4.5-4.5H41z" fill="#F4F1FF" fill-opacity=".9"/>
+</svg>

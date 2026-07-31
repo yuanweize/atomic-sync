@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#080b13">
+  <meta name="description" content="Atomic directory migration and media archive orchestration.">
+  <title>Atomic Sync</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <main class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Atomic Sync home">
+        <img src="/logo.svg" width="42" height="42" alt="">
+        <span><strong>Atomic Sync</strong><small data-i18n="brandTagline">Archive orchestration</small></span>
+      </a>
+      <div class="top-actions">
+        <span class="connection" id="connectionStatus" role="status"><i></i><span data-i18n="connecting">Connecting</span></span>
+        <button class="icon-button" id="languageButton" type="button" aria-label="Switch language">中</button>
+        <button class="button secondary compact" id="authButton" type="button" data-i18n="unlock">Unlock</button>
+        <button class="button primary compact" id="newJobButton" type="button"><span aria-hidden="true">＋</span><span data-i18n="newJob">New job</span></button>
+      </div>
+    </header>
+
+    <section class="hero" aria-labelledby="heroTitle">
+      <div>
+        <div class="eyebrow"><span></span><span data-i18n="eyebrow">CONTROL PLANE · SAFE BY DEFAULT</span></div>
+        <h1 id="heroTitle" data-i18n="heroTitle">Move complete media units, never loose fragments.</h1>
+        <p data-i18n="heroText">Stage, verify, publish, and recover every directory as one auditable operation.</p>
+      </div>
+      <div class="hero-mark" aria-hidden="true">
+        <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span><span class="core">A</span>
+      </div>
+    </section>
+
+    <section class="safety-banner" aria-label="Safety status">
+      <div class="safety-icon" aria-hidden="true">◇</div>
+      <div><strong data-i18n="safetyTitle">Protected launch mode</strong><p data-i18n="safetyText">New jobs start as dry runs. Existing destinations fail closed unless immutable merge is explicitly selected.</p></div>
+      <span class="safety-pill" data-i18n="sourcePreserved">SOURCE PRESERVED</span>
+    </section>
+
+    <section class="metrics" id="stats" aria-label="Dashboard metrics">
+      <article class="metric skeleton"></article><article class="metric skeleton"></article><article class="metric skeleton"></article><article class="metric skeleton"></article>
+    </section>
+
+    <section class="workspace">
+      <article class="panel jobs-panel">
+        <div class="panel-head">
+          <div><span class="section-kicker" data-i18n="orchestration">ORCHESTRATION</span><h2 data-i18n="syncJobs">Sync jobs</h2></div>
+          <button class="text-button" id="refreshButton" type="button"><span aria-hidden="true">↻</span><span data-i18n="refresh">Refresh</span></button>
+        </div>
+        <div class="job-list" id="jobs" aria-live="polite"><div class="empty-state"><span class="loader"></span><p data-i18n="loadingJobs">Loading jobs…</p></div></div>
+      </article>
+
+      <aside class="panel activity-panel">
+        <div class="panel-head">
+          <div><span class="section-kicker" data-i18n="auditTrail">AUDIT TRAIL</span><h2 data-i18n="recentRuns">Recent runs</h2></div>
+          <span class="live-indicator"><i></i><span data-i18n="live">LIVE</span></span>
+        </div>
+        <div class="run-list" id="runs" aria-live="polite"><div class="empty-state compact-state"><p data-i18n="noRuns">No runs recorded yet.</p></div></div>
+      </aside>
+    </section>
+
+    <footer><span>Atomic Sync <b id="version">dev</b></span><span data-i18n="footerText">Deterministic routing · SQLite audit trail · rclone transport</span></footer>
+  </main>
+
+  <dialog id="jobDialog" class="dialog wide-dialog">
+    <form id="jobForm" method="dialog">
+      <div class="dialog-head"><div><span class="section-kicker" data-i18n="jobConfig">JOB CONFIGURATION</span><h2 id="jobDialogTitle" data-i18n="createJob">Create a sync job</h2></div><button class="close-button" type="button" data-close="jobDialog" aria-label="Close">×</button></div>
+      <input type="hidden" name="id">
+      <div class="form-grid">
+        <label class="field span-2"><span data-i18n="jobName">Job name</span><input name="name" required maxlength="128" autocomplete="off" placeholder="Archive stable movies"></label>
+        <label class="field span-2"><span data-i18n="source">Source</span><input name="source" required autocomplete="off" placeholder="/sources/storagebox/movies"><small data-i18n="sourceHint">Use a mounted absolute path or an rclone remote path.</small></label>
+        <label class="field"><span data-i18n="destinationName">Destination ID</span><input name="destinationName" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" value="gd-primary"></label>
+        <label class="field"><span data-i18n="destinationPath">Destination path</span><input name="destinationPath" required autocomplete="off" placeholder="GD:data/media/movies"></label>
+        <label class="field"><span data-i18n="mode">Mode</span><select name="mode"><option value="copy" data-i18n="copyMode">Copy · preserve source</option><option value="move" data-i18n="moveMode">Move · delete only after final verification</option></select></label>
+        <label class="field"><span data-i18n="grouping">Atomic unit</span><select name="grouping"><option value="folder" data-i18n="folderUnit">Top-level folder</option><option value="show" data-i18n="showUnit">Complete show</option><option value="season" data-i18n="seasonUnit">Season</option><option value="depth" data-i18n="depthUnit">Path depth</option></select></label>
+        <label class="field"><span data-i18n="conflictPolicy">Existing destination</span><select name="conflictPolicy"><option value="fail" data-i18n="failClosed">Fail closed (recommended)</option><option value="merge-immutable" data-i18n="immutableMerge">Immutable merge · never overwrite</option></select></label>
+        <label class="field"><span data-i18n="verify">Verification</span><select name="verify"><option value="checksum" data-i18n="checksum">Checksum</option><option value="size" data-i18n="sizeOnly">Size only</option></select></label>
+        <label class="field"><span data-i18n="settleSeconds">Stable window (seconds)</span><input name="settleSeconds" type="number" min="0" max="315360000" value="2592000"></label>
+        <label class="field"><span data-i18n="concurrency">Concurrency</span><input name="concurrency" type="number" min="1" max="8" value="2"></label>
+        <label class="field"><span data-i18n="depth">Depth</span><input name="depth" type="number" min="1" max="32" value="1"></label>
+        <label class="field"><span data-i18n="schedule">Schedule</span><input name="schedule" autocomplete="off" placeholder="Reserved for a future release" disabled></label>
+      </div>
+      <div class="switch-stack">
+        <label class="switch-row"><input name="dryRun" type="checkbox" checked><span class="switch"></span><span><strong data-i18n="dryRun">Dry run</strong><small data-i18n="dryRunHint">Discover and plan units without touching any file.</small></span></label>
+        <label class="switch-row"><input name="paused" type="checkbox"><span class="switch"></span><span><strong data-i18n="paused">Paused</strong><small data-i18n="pausedHint">Save the job but prevent manual execution.</small></span></label>
+      </div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close="jobDialog" data-i18n="cancel">Cancel</button><button class="button primary" type="submit" id="saveJobButton" data-i18n="saveJob">Save job</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="authDialog" class="dialog auth-dialog">
+    <form id="authForm" method="dialog">
+      <div class="auth-mark"><img src="/logo.svg" width="56" height="56" alt=""></div>
+      <h2 data-i18n="unlockTitle">Unlock the control plane</h2>
+      <p data-i18n="unlockText">Enter the API token configured on this server. It remains in this browser tab only.</p>
+      <label class="field"><span data-i18n="apiToken">API token</span><input name="token" type="password" required autocomplete="current-password" spellcheck="false"></label>
+      <div class="dialog-actions auth-actions"><button class="button secondary" id="forgetTokenButton" type="button" data-i18n="forgetToken">Forget token</button><button class="button primary" type="submit" data-i18n="unlock">Unlock</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="runDialog" class="dialog confirm-dialog">
+    <form id="runForm" method="dialog">
+      <div class="warning-mark" aria-hidden="true">!</div>
+      <h2 data-i18n="confirmRun">Confirm execution</h2>
+      <p id="runSummary"></p>
+      <div class="danger-confirm" id="dangerConfirm"><label class="field"><span data-i18n="typeJobName">Type the job name to authorize a write run</span><input name="confirmation" autocomplete="off"></label></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close="runDialog" data-i18n="cancel">Cancel</button><button class="button danger" type="submit" data-i18n="runNow">Run now</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="analysisDialog" class="dialog wide-dialog analysis-dialog">
+    <div class="analysis-content">
+      <div class="dialog-head"><div><span class="section-kicker" data-i18n="branchAnalysis">BRANCH ANALYSIS</span><h2 id="analysisTitle" data-i18n="archiveStatus">Archive status</h2></div><button class="close-button" type="button" data-close="analysisDialog" aria-label="Close">×</button></div>
+      <p class="analysis-note" data-i18n="analysisNote">Metadata coverage is a planning signal. Source deletion still requires a final checksum or size check.</p>
+      <p class="analysis-context" id="analysisContext"></p>
+      <div class="analysis-summary" id="analysisSummary"></div>
+      <div class="analysis-units" id="analysisUnits"></div>
+    </div>
+  </dialog>
+
+  <div class="toast-region" id="toasts" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+services:
+  atomic-sync:
+    image: atomic-sync:dev
+    build:
+      context: .
+      args:
+        VERSION: ${ATOMIC_VERSION:-dev}
+        COMMIT: ${ATOMIC_COMMIT:-local}
+        BUILD_DATE: ${ATOMIC_BUILD_DATE:-unknown}

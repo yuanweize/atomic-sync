@@ -1,0 +1,18 @@
+# Optional design reference. Runtime jobs are persisted in SQLite via the UI/API.
+# Never commit secrets or rclone.conf.
+listen: ":8080"
+dataDir: /data/atomic-sync
+jobs:
+  - name: archive-movies
+    source: /sources/media/movies
+    destinations:
+      - name: gd-primary
+        path: GD:media/movies
+        weight: 1
+    mode: copy
+    grouping: folder
+    settleSeconds: 2592000
+    concurrency: 2
+    verify: checksum
+    conflictPolicy: fail
+    dryRun: true
