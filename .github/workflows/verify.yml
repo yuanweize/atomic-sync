@@ -56,6 +56,23 @@ jobs:
 
       - name: Smoke-test image
         run: |
+          set -Eeuo pipefail
+
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "::group::Atomic Sync smoke-test diagnostics"
+              docker ps --all --filter name=atomic-sync-ci || true
+              docker inspect --format 'state={{.State.Status}} exit={{.State.ExitCode}} error={{json .State.Error}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' atomic-sync-ci || true
+              docker inspect --format '{{range .State.Health.Log}}{{println .Start "exit=" .ExitCode "output=" .Output}}{{end}}' atomic-sync-ci || true
+              docker logs --timestamps atomic-sync-ci || true
+              echo "::endgroup::"
+            fi
+            docker rm --force atomic-sync-ci >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
           docker run --detach --name atomic-sync-ci \
             --read-only \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
@@ -64,11 +81,40 @@ jobs:
             --publish 127.0.0.1:18088:8080 \
             --env ATOMIC_API_TOKEN=${{ github.sha }} \
             atomic-sync:test
-          trap 'docker logs atomic-sync-ci; docker rm --force atomic-sync-ci' EXIT
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:18088/api/ready; then break; fi
+
+          ready_status=unavailable
+          health_status=starting
+          container_status=created
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:18088/api/ready >/dev/null 2>&1; then
+              ready_status=ready
+            else
+              ready_status=unavailable
+            fi
+            container_status="$(docker inspect --format '{{.State.Status}}' atomic-sync-ci)"
+            health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' atomic-sync-ci)"
+
+            if [ "$ready_status" = ready ] && [ "$health_status" = healthy ]; then
+              echo "Atomic Sync became ready and healthy after ${attempt}s"
+              break
+            fi
+            case "$container_status" in
+              dead|exited|removing)
+                echo "::error::Atomic Sync container entered terminal state: $container_status"
+                break
+                ;;
+            esac
+            if [ "$attempt" -eq 1 ] || [ $((attempt % 10)) -eq 0 ]; then
+              echo "Waiting for Atomic Sync: attempt=$attempt ready=$ready_status health=$health_status container=$container_status"
+            fi
             sleep 1
           done
+
+          if [ "$ready_status" != ready ] || [ "$health_status" != healthy ]; then
+            echo "::error::Atomic Sync did not become ready and healthy within 90 seconds (ready=$ready_status health=$health_status container=$container_status)"
+            exit 1
+          fi
+
           curl --fail --silent http://127.0.0.1:18088/api/health | grep '"status":"ok"'
           test "$(docker inspect --format '{{.State.Health.Status}}' atomic-sync-ci)" = healthy
           test "$(docker exec atomic-sync-ci id -u)" = 1000
