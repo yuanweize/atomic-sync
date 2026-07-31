@@ -110,7 +110,7 @@ docker compose ps
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.1.1@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.1.2@sha256:<release-digest>
 ```
 
 把服务嵌入其他 Compose 项目时不要使用 `build: .`，否则构建上下文会变成对方项目目录。

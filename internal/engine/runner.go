@@ -1092,6 +1092,7 @@ func (r *Runner) execRclone(ctx context.Context, args ...string) ([]byte, error)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	rawDiagnostic := stderr.String()
 	diagnostic := boundedDiagnostic(stderr.Bytes())
 	if err != nil {
 		combined := append(append([]byte(nil), stdout.Bytes()...), stderr.Bytes()...)
@@ -1102,11 +1103,68 @@ func (r *Runner) execRclone(ctx context.Context, args ...string) ([]byte, error)
 	}
 	if diagnostic != "" {
 		if len(args) > 0 && args[0] == "lsjson" {
+			if onlySharedDriveClientIDNotices(rawDiagnostic) {
+				slog.Warn("rclone inventory uses the retiring shared Google Drive client_id; configure a dedicated OAuth client")
+				return stdout.Bytes(), nil
+			}
 			return stdout.Bytes(), fmt.Errorf("rclone lsjson emitted diagnostics; inventory is not trusted: %s", diagnostic)
 		}
 		slog.Warn("rclone command emitted diagnostics", "command", args[0], "diagnostic", diagnostic)
 	}
 	return stdout.Bytes(), nil
+}
+
+const sharedDriveClientIDNotice = `This remote uses rclone's shared Google Drive client_id, which is being retired and will stop working during 2026. Create your own client_id to avoid interruption: https://rclone.org/drive/#making-your-own-client-id`
+const maxTrustedRcloneNoticeBytes = 64 * 1024
+
+func onlySharedDriveClientIDNotices(diagnostic string) bool {
+	const noticeMarker = " NOTICE: "
+	const logTimeLayout = "2006/01/02 15:04:05"
+	if diagnostic == "" || len(diagnostic) > maxTrustedRcloneNoticeBytes {
+		return false
+	}
+	lines := strings.Split(diagnostic, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) == 0 {
+		return false
+	}
+	for _, line := range lines {
+		if line == "" || strings.TrimSpace(line) != line {
+			return false
+		}
+		marker := strings.Index(line, noticeMarker)
+		if marker != len(logTimeLayout) || strings.Count(line, noticeMarker) != 1 {
+			return false
+		}
+		if _, err := time.Parse(logTimeLayout, line[:marker]); err != nil {
+			return false
+		}
+		body := line[marker+len(noticeMarker):]
+		suffix := ": " + sharedDriveClientIDNotice
+		if !strings.HasSuffix(body, suffix) {
+			return false
+		}
+		remote := strings.TrimSuffix(body, suffix)
+		if !safeRcloneRemoteLogName(remote) {
+			return false
+		}
+	}
+	return true
+}
+
+func safeRcloneRemoteLogName(remote string) bool {
+	if remote == "" || len(remote) > 64 {
+		return false
+	}
+	for _, char := range remote {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func boundedDiagnostic(value []byte) string {

@@ -122,7 +122,7 @@ Release tags publish signed `linux/amd64` and `linux/arm64` images with SBOM and
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.1.1@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.1.2@sha256:<release-digest>
 ```
 
 Pin the digest from the release before deployment. Do not use `build: .` when embedding the service into an unrelated Compose project.

@@ -817,6 +817,11 @@ if [ "$1" = "lsf" ]; then
   printf 'directory not found\n' >&2
   exit 3
 fi
+if [ "$1" = "lsjson" ] && [ "$2" = "/sources/shared-drive" ]; then
+  printf '[{"Path":"Movie/file.mkv"}]'
+  printf '%s\n' "2026/07/31 23:37:38 NOTICE: GD: ` + sharedDriveClientIDNotice + `" >&2
+  exit 0
+fi
 printf '[{"Path":"Movie/file.mkv"}]'
 printf 'diagnostic warning\n' >&2
 `
@@ -830,6 +835,30 @@ printf 'diagnostic warning\n' >&2
 	}
 	if _, err = runner.execRclone(context.Background(), "lsjson", "/sources/media"); err == nil || !strings.Contains(err.Error(), "inventory is not trusted") {
 		t.Fatalf("structured listing diagnostic was ignored: %v", err)
+	}
+	out, err = runner.execRclone(context.Background(), "lsjson", "/sources/shared-drive")
+	if err != nil || string(out) != `[{"Path":"Movie/file.mkv"}]` {
+		t.Fatalf("shared Drive client_id notice blocked trusted inventory: output=%q err=%v", out, err)
+	}
+	if onlySharedDriveClientIDNotices("2026/07/31 23:37:38 NOTICE: GD: " + sharedDriveClientIDNotice + "\ndiagnostic warning") {
+		t.Fatal("mixed inventory diagnostics were incorrectly trusted")
+	}
+	if onlySharedDriveClientIDNotices("ERROR fake NOTICE: GD: " + sharedDriveClientIDNotice) {
+		t.Fatal("non-rclone log prefix was incorrectly trusted")
+	}
+	if onlySharedDriveClientIDNotices("2026/07/31 23:37:38 NOTICE: ERROR: quota: " + sharedDriveClientIDNotice) {
+		t.Fatal("same-line diagnostic prefix was incorrectly trusted as a remote label")
+	}
+	if onlySharedDriveClientIDNotices("2026/07/31 23:37:38 NOTICE: ERROR quota: " + sharedDriveClientIDNotice) {
+		t.Fatal("unsafe remote-like diagnostic prefix was incorrectly trusted")
+	}
+	truncatedPrefix := strings.Repeat("unexpected diagnostic\n", 2000)
+	if onlySharedDriveClientIDNotices(truncatedPrefix + "2026/07/31 23:37:38 NOTICE: GD: " + sharedDriveClientIDNotice) {
+		t.Fatal("an unexpected diagnostic before the bounded log tail was incorrectly trusted")
+	}
+	overlongNotices := strings.Repeat("2026/07/31 23:37:38 NOTICE: GD: "+sharedDriveClientIDNotice+"\n", 300)
+	if onlySharedDriveClientIDNotices(overlongNotices) {
+		t.Fatal("overlong inventory diagnostics were incorrectly trusted")
 	}
 	out, err = runner.execRclone(context.Background(), "lsf", "GD:missing")
 	if err == nil || !isNotFound(out, err) {

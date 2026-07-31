@@ -34,6 +34,8 @@ Do not make the source writable to Atomic Sync. The API and Runner reject `mode:
 
 ### NUE v0.1.x rollout
 
+The current GD remote still uses rclone's shared Google Drive OAuth client. Rclone warns that this shared client is being retired during 2026. Atomic Sync reports that exact notice as an operational warning while continuing the inventory; all other or mixed `lsjson` diagnostics still fail closed. Configure a dedicated Google Drive OAuth `client_id` and `client_secret` before the shared client is retired.
+
 For NUE, bind `/data/storagebox/media` read-only inside the Atomic Sync container and keep the mergerfs union out of the execution path. Create separate movie and TV jobs, both as `copy + dryRun`, and run branch analysis serially while Drive quota is healthy. Recreate only the Atomic Sync service; do not restart or recreate Sonarr, Radarr, mergerfs, or the rclone mount. A later copy canary still uses the read-only source mount.
 
 ## Verification cost and semantics
