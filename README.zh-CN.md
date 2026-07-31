@@ -105,6 +105,10 @@ services:
 
 把服务嵌入其他 Compose 项目时不要使用 `build: .`，否则构建上下文会变成对方项目目录。
 
+官方镜像只链接 rclone 的 `local`、`drive`、`crypt` 后端以及 Atomic Sync
+实际调用的命令，覆盖 StorageBox/CIFS → Google Drive 场景，同时缩小运行时攻击面。
+如需其他 rclone 后端，应基于审核过的自定义镜像构建，而不是在生产中临时替换二进制。
+
 每个 GitHub Release 都包含 `image-digest.txt`、Linux 二进制文件和 `SHA256SUMS`。发布流程会把 GHCR 包设为公开、验证匿名读取、附带 SBOM/provenance，并使用 GitHub OIDC 对不可变 digest 签名。部署前可这样验证：
 
 ```bash

@@ -13,8 +13,9 @@ Before deployment:
 7. Mount the physical source branch read-only for the initial rollout.
 8. Do not mount an entire host `/data` tree when only one source path is required.
 9. Verify that each physical source is mounted with the expected filesystem type (`findmnt --target /path/to/source`) before starting the container or running analysis. The Compose bind uses `create_host_path: false`, but an offline filesystem can leave an existing empty mountpoint behind.
-9. Keep JSON logs bounded with rotation.
-10. Record the pre-deployment Compose hash and container states.
+10. Confirm the official image's local/Drive/crypt backend set matches the deployment.
+11. Keep JSON logs bounded with rotation.
+12. Record the pre-deployment Compose hash and container states.
 
 ## First rollout
 

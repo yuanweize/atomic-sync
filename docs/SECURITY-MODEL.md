@@ -29,6 +29,7 @@ The HTTP client, Atomic Sync process, rclone child process, local/CIFS source, c
 | Credential committed or copied into image | `.gitignore` and `.dockerignore` exclude rclone config and `.env` |
 | Container breakout | Non-root UID, read-only root, zero capabilities, no-new-privileges, pids/memory/CPU limits |
 | Dependency or base-image drift | Base-image digests, action SHAs, Dependabot, CodeQL, race tests, Trivy, SBOM/provenance/signing |
+| Unused rclone backend attack surface | Official image links only local/Drive/crypt and the commands used by the engine; known fixed dependencies are rebuilt rather than ignored |
 | Cloud API exhaustion | Serialized analysis, sequential destinations, bounded worker pools |
 
 ## Deliberate limitations
@@ -36,6 +37,8 @@ The HTTP client, Atomic Sync process, rclone child process, local/CIFS source, c
 - The application token is a single shared secret, not user-level RBAC.
 - A trusted operator can still configure a destructive move job.
 - rclone and the selected storage providers define hash availability and remote consistency.
+- The official image supports local, Google Drive, and crypt rclone backends;
+  other providers require a separately reviewed custom build.
 - The Docker daemon and host root remain outside the application's isolation guarantee.
 - Metadata analysis uses path and size; it is not a checksum guarantee.
 

@@ -16,5 +16,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Fail-closed destination policy and final source-to-destination verification.
 - Server-generated job IDs, strict JSON decoding, CSP, security headers, and constant-time token checks.
 - Non-root, read-only, capability-free container defaults.
+- Security-rebuilt, minimal rclone 1.74.4 runtime with fixed `x/text` and
+  `grpc` dependencies instead of suppressing known HIGH findings.
 
 [Unreleased]: https://github.com/yuanweize/atomic-sync/compare/v0.1.0...HEAD

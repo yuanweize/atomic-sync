@@ -117,6 +117,11 @@ services:
 
 Pin the digest from the release before deployment. Do not use `build: .` when embedding the service into an unrelated Compose project.
 
+The official image deliberately links only rclone's `local`, `drive`, and
+`crypt` backends and only the commands Atomic Sync executes. This covers the
+StorageBox/CIFS → Google Drive deployment while reducing the runtime attack
+surface. Build a reviewed custom image if another rclone backend is required.
+
 Each GitHub Release includes `image-digest.txt`, Linux binaries, and `SHA256SUMS`. The workflow makes the GHCR package public, verifies anonymous manifest access, attaches SBOM/provenance, and signs the immutable digest with GitHub OIDC. Verify a release before use:
 
 ```bash
