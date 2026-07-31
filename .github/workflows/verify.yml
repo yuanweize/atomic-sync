@@ -48,17 +48,27 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f compose.yaml -f compose.dev.yaml config --quiet
-          docker compose config --format json | jq -e '
+          yq -e '.services["atomic-sync"] as $service | ([$service.volumes[] | select(.type == "bind")] | length == 3)' compose.yaml
+          yq -e '.services["atomic-sync"] as $service | ([$service.volumes[] | select(.type == "bind" and .target == "/data" and .bind.create_host_path == false)] | length == 1)' compose.yaml
+          yq -e '.services["atomic-sync"] as $service | ([$service.volumes[] | select(.type == "bind" and .target == "/config/rclone" and .bind.create_host_path == false)] | length == 1)' compose.yaml
+          yq -e '.services["atomic-sync"] as $service | ([$service.volumes[] | select(.type == "bind" and .target == "/sources/media" and .bind.create_host_path == false)] | length == 1)' compose.yaml
+          docker compose version
+          compose_json="$(docker compose config --format json)"
+          jq -e '
             .services["atomic-sync"] as $service |
-            ($service.read_only == true) and
-            ($service.user == "1000:1000") and
-            ($service.cap_drop | index("ALL") != null) and
-            ($service.security_opt | index("no-new-privileges:true") != null) and
-            ($service.environment.RCLONE_CONFIG == "/config/rclone/rclone.conf") and
-            ([$service.volumes[] | select(.target == "/config/rclone" and (.read_only // false) == false and .bind.create_host_path == false)] | length == 1) and
-            ([$service.volumes[] | select(.target == "/sources/media" and .read_only == true and .bind.create_host_path == false)] | length == 1) and
-            ([$service.volumes[] | select((.read_only // false) == false) | .target] | sort == ["/config/rclone", "/data"])
-          '
+            {
+              root_read_only: ($service.read_only == true),
+              fixed_user: ($service.user == "1000:1000"),
+              all_caps_dropped: (($service.cap_drop // []) | index("ALL") != null),
+              no_new_privileges: (($service.security_opt // []) | any(. == "no-new-privileges:true" or . == "no-new-privileges=true")),
+              rclone_config_path: ($service.environment.RCLONE_CONFIG == "/config/rclone/rclone.conf"),
+              config_rw_bind: ([$service.volumes[] | select(.type == "bind" and .target == "/config/rclone" and (.read_only // false) == false and ((.bind.create_host_path // false) == false))] | length == 1),
+              source_ro_bind: ([$service.volumes[] | select(.type == "bind" and .target == "/sources/media" and .read_only == true and ((.bind.create_host_path // false) == false))] | length == 1),
+              writable_targets_exact: ([$service.volumes[] | select((.read_only // false) == false) | .target] | sort == ["/config/rclone", "/data"])
+            } as $checks |
+            $checks,
+            ($checks | to_entries | all(.value == true))
+          ' <<<"$compose_json"
 
       - name: Check and build hardened image
         run: |
