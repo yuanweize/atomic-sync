@@ -4,6 +4,13 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-01
+
+### Fixed
+
+- Mount only the dedicated rclone config directory read-write so OAuth token refresh can persist via atomic rename while the container root and media source remain read-only.
+- Replace the Compose interpolation variable `RCLONE_CONFIG_PATH` with `RCLONE_CONFIG_DIR`; deployments with a custom config location must migrate it to the dedicated directory path.
+
 ## [0.1.2] - 2026-07-31
 
 ### Fixed
@@ -43,7 +50,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Release-time verification of the Cosign identity, SBOM, provenance, and
   anonymous GHCR access.
 
-[Unreleased]: https://github.com/yuanweize/atomic-sync/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/yuanweize/atomic-sync/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.3
 [0.1.2]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.2
 [0.1.1]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.1
 [0.1.0]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.0

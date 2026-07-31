@@ -91,11 +91,12 @@ cp .env.example .env
 openssl rand -hex 32
 ```
 
-把生成的 Token 写入 `.env`，然后只处理 Atomic Sync 的专用目录权限；**绝不要对共享媒体根目录递归 `chown`**。
+把生成的 Token 写入 `.env`，然后只处理 Atomic Sync 的专用目录权限。rclone 会通过“临时文件 + 原子重命名”刷新 OAuth token，因此专用 `rclone` 目录必须可写；**绝不要对共享媒体根目录递归 `chown`**。
 
 ```bash
 sudo chown -R 1000:1000 data
-sudo chown 1000:1000 rclone/rclone.conf
+sudo chown -R 1000:1000 rclone
+sudo chmod 700 rclone
 sudo chmod 600 rclone/rclone.conf
 docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 docker compose ps
@@ -110,7 +111,7 @@ docker compose ps
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.1.2@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.1.3@sha256:<release-digest>
 ```
 
 把服务嵌入其他 Compose 项目时不要使用 `build: .`，否则构建上下文会变成对方项目目录。
@@ -144,8 +145,9 @@ sha256sum -c SHA256SUMS
 | `ATOMIC_RCLONE_TPS_LIMIT` | `2` | 每进程后端每秒事务上限，burst 固定为 1 |
 | `ATOMIC_LOG_FORMAT` | `json` | `json` 或文本结构化日志 |
 | `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | 明确的 rclone 配置路径 |
+| `RCLONE_CONFIG_DIR` | `./rclone` | Compose 绑定专用可写配置目录时使用的宿主路径 |
 
-程序不会修改 `.env` 或 `rclone.conf`。任务、目标归属、运行历史与分支分析结果均保存在 `atomic-sync.db`。本地来源只能位于 `/sources/...`，本地目标只能位于 `/destinations/...`，远程来源会被拒绝。v0.1.x 必须复制完整目录单元，不接受 include/exclude 过滤器。
+应用本身不会写入 `.env` 或编辑 rclone 配置，但子进程 rclone 可能在专用 `/config/rclone` 绑定目录中原子持久化刷新后的 OAuth token。该目录应设为 `0700`，`rclone.conf` 设为 `0600`；容器根文件系统和媒体来源挂载仍严格只读。任务、目标归属、运行历史与分支分析结果均保存在 `atomic-sync.db`。本地来源只能位于 `/sources/...`，本地目标只能位于 `/destinations/...`，远程来源会被拒绝。v0.1.x 必须复制完整目录单元，不接受 include/exclude 过滤器。
 
 ## 真实保证边界
 

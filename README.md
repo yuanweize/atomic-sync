@@ -103,11 +103,12 @@ Generate a token and place it in `.env`:
 openssl rand -hex 32
 ```
 
-Ensure the dedicated state and config file are readable by the image's fixed UID/GID 1000. Never recursively change ownership of a shared media root.
+Ensure the dedicated state and rclone config directory are owned by the image's fixed UID/GID 1000. Rclone refreshes OAuth tokens with a temporary file plus atomic rename, so this dedicated directory must be writable. Never recursively change ownership of a shared media root.
 
 ```bash
 sudo chown -R 1000:1000 data
-sudo chown 1000:1000 rclone/rclone.conf
+sudo chown -R 1000:1000 rclone
+sudo chmod 700 rclone
 sudo chmod 600 rclone/rclone.conf
 docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 docker compose ps
@@ -122,7 +123,7 @@ Release tags publish signed `linux/amd64` and `linux/arm64` images with SBOM and
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.1.2@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.1.3@sha256:<release-digest>
 ```
 
 Pin the digest from the release before deployment. Do not use `build: .` when embedding the service into an unrelated Compose project.
@@ -157,8 +158,9 @@ sha256sum -c SHA256SUMS
 | `ATOMIC_RCLONE_TPS_LIMIT` | `2` | Per-process backend transactions per second; burst is fixed at 1 |
 | `ATOMIC_LOG_FORMAT` | `json` | `json` or text structured logs |
 | `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | Explicit rclone configuration path |
+| `RCLONE_CONFIG_DIR` | `./rclone` | Host path used by Compose for the dedicated writable config directory |
 
-The application never writes `.env` or `rclone.conf`. Jobs, assignments, runs, and branch analyses are stored in `atomic-sync.db`. Local sources are restricted to `/sources/...`, local destinations to `/destinations/...`, and remote sources are rejected. Jobs always copy a complete directory unit; include/exclude filters are rejected in v0.1.x.
+The application never writes `.env` or edits rclone configuration, but its rclone child may atomically persist refreshed OAuth tokens in the dedicated `/config/rclone` bind. Keep that directory private (`0700`) and `rclone.conf` at `0600`; the container root and media source mounts remain read-only. Jobs, assignments, runs, and branch analyses are stored in `atomic-sync.db`. Local sources are restricted to `/sources/...`, local destinations to `/destinations/...`, and remote sources are rejected. Jobs always copy a complete directory unit; include/exclude filters are rejected in v0.1.x.
 
 ## Guarantees and boundaries
 

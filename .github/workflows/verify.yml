@@ -48,11 +48,51 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f compose.yaml -f compose.dev.yaml config --quiet
+          docker compose config --format json | jq -e '
+            .services["atomic-sync"] as $service |
+            ($service.read_only == true) and
+            ($service.user == "1000:1000") and
+            ($service.cap_drop | index("ALL") != null) and
+            ($service.security_opt | index("no-new-privileges:true") != null) and
+            ($service.environment.RCLONE_CONFIG == "/config/rclone/rclone.conf") and
+            ([$service.volumes[] | select(.target == "/config/rclone" and (.read_only // false) == false and .bind.create_host_path == false)] | length == 1) and
+            ([$service.volumes[] | select(.target == "/sources/media" and .read_only == true and .bind.create_host_path == false)] | length == 1) and
+            ([$service.volumes[] | select((.read_only // false) == false) | .target] | sort == ["/config/rclone", "/data"])
+          '
 
       - name: Check and build hardened image
         run: |
           docker build --check .
           docker build --tag atomic-sync:test --build-arg VERSION=ci --build-arg COMMIT=${{ github.sha }} .
+
+      - name: Verify rclone token-refresh boundary
+        run: |
+          set -Eeuo pipefail
+          config_dir="$(mktemp -d)"
+          source_dir="$(mktemp -d)"
+          cleanup() {
+            sudo rm -rf "$config_dir" "$source_dir"
+          }
+          trap cleanup EXIT
+
+          sudo chown 1000:1000 "$config_dir"
+          sudo chmod 0700 "$config_dir"
+          sudo chmod 0777 "$source_dir"
+          printf '[GD]\ntype = drive\n' | sudo tee "$config_dir/rclone.conf" >/dev/null
+          sudo chown 1000:1000 "$config_dir/rclone.conf"
+          sudo chmod 0600 "$config_dir/rclone.conf"
+
+          docker run --rm --read-only --user 1000:1000 \
+            --mount "type=bind,src=$config_dir,dst=/config/rclone" \
+            --mount "type=bind,src=$source_dir,dst=/sources/media,readonly" \
+            --entrypoint /bin/sh atomic-sync:test -ec '
+              cp /config/rclone/rclone.conf /config/rclone/rclone.conf.tmp
+              mv /config/rclone/rclone.conf /config/rclone/rclone.conf.old
+              mv /config/rclone/rclone.conf.tmp /config/rclone/rclone.conf
+              rm /config/rclone/rclone.conf.old
+              ! touch /sources/media/forbidden
+              ! touch /home/atomic/rootfs-forbidden
+            '
 
       - name: Smoke-test image
         run: |

@@ -32,6 +32,7 @@ The HTTP client, Atomic Sync process, rclone child process, local/CIFS source, c
 | Existing immutable destination extras | Only `merge-immutable` uses one-way final verification, so reviewed destination-only files are preserved rather than deleted; new destinations must match exactly |
 | Crash leaves misleading running state | Lifecycle cancellation plus startup reconciliation to failed |
 | Credential committed or copied into image | `.gitignore` and `.dockerignore` exclude rclone config and `.env` |
+| OAuth token refresh broadens host write access | Only a dedicated private rclone config directory is writable; the container root and physical source remain read-only |
 | Container breakout | Non-root UID, read-only root, zero capabilities, no-new-privileges, pids/memory/CPU limits |
 | Dependency or base-image drift | Base-image digests, action SHAs, Dependabot, CodeQL, race tests, Trivy, SBOM/provenance/signing |
 | Unused rclone backend attack surface | Official image links only local/Drive/crypt and the commands used by the engine; known fixed dependencies are rebuilt rather than ignored |
