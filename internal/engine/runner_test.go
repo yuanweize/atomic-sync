@@ -398,23 +398,40 @@ func TestRunnerRejectsShallowAndOverlappingUnitsBeforeWrites(t *testing.T) {
 }
 
 func TestDiscoverRequiresModTimeForStableWindow(t *testing.T) {
+	for _, modTime := range []string{`""`, "null"} {
+		t.Run(modTime, func(t *testing.T) {
+			database := runnerStore(t)
+			fake := &fakeExecutor{fn: func(_ context.Context, _ []string) ([]byte, error) {
+				return []byte(`[{"Path":"Movie/file.mkv","ModTime":` + modTime + `,"IsDir":false}]`), nil
+			}}
+			runner := New(database, "rclone", 1)
+			runner.execute = fake.execute
+			job := runnerJob()
+			job.SettleSeconds = 60
+			if _, err := runner.discover(context.Background(), job); err == nil || !strings.Contains(err.Error(), "eligibility cannot be proven") {
+				t.Fatalf("unknown modification time was treated as stable: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiscoverRejectsMalformedModTime(t *testing.T) {
 	database := runnerStore(t)
 	fake := &fakeExecutor{fn: func(_ context.Context, _ []string) ([]byte, error) {
-		return []byte(`[{"Path":"Movie/file.mkv","IsDir":false}]`), nil
+		return []byte(`[{"Path":"Movie/file.mkv","ModTime":"not-a-time","IsDir":false}]`), nil
 	}}
 	runner := New(database, "rclone", 1)
 	runner.execute = fake.execute
-	job := runnerJob()
-	job.SettleSeconds = 60
-	if _, err := runner.discover(context.Background(), job); err == nil || !strings.Contains(err.Error(), "eligibility cannot be proven") {
-		t.Fatalf("zero modification time was treated as stable: %v", err)
+
+	if _, err := runner.discover(context.Background(), runnerJob()); err == nil || !strings.Contains(err.Error(), "decode rclone listing") {
+		t.Fatalf("malformed modification time was accepted: %v", err)
 	}
 }
 
 func TestArchiveAnalysisLooksInsideOverlappingFolders(t *testing.T) {
 	database := runnerStore(t)
 	sourceListing := []byte(`[
-      {"Path":"Pending/movie.mkv","Size":100,"IsDir":false},
+      {"Path":"Pending/movie.mkv","ModTime":"","Size":100,"IsDir":false},
 	  {"Path":"PendingShell","Size":-1,"IsDir":true},
 	  {"Path":"PendingShell/movie.mkv","Size":100,"IsDir":false},
       {"Path":"Partial/a.mkv","Size":100,"IsDir":false},

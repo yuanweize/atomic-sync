@@ -51,10 +51,25 @@ type Runner struct {
 }
 
 type listed struct {
-	Path    string    `json:"Path"`
-	ModTime time.Time `json:"ModTime"`
-	IsDir   bool      `json:"IsDir"`
-	Size    int64     `json:"Size"`
+	Path    string     `json:"Path"`
+	ModTime rcloneTime `json:"ModTime"`
+	IsDir   bool       `json:"IsDir"`
+	Size    int64      `json:"Size"`
+}
+
+// rcloneTime accepts the empty string emitted by `rclone lsjson --no-modtime`.
+// Discovery still treats an empty value as unknown and fails closed whenever a
+// stable-window decision depends on it.
+type rcloneTime struct {
+	time.Time
+}
+
+func (value *rcloneTime) UnmarshalJSON(data []byte) error {
+	if string(data) == `""` || string(data) == "null" {
+		value.Time = time.Time{}
+		return nil
+	}
+	return value.Time.UnmarshalJSON(data)
 }
 
 type inventoryUnit struct {
@@ -386,7 +401,7 @@ func (r *Runner) discover(ctx context.Context, j model.Job) ([]string, error) {
 			continue
 		}
 		if file.ModTime.After(latest[unit]) {
-			latest[unit] = file.ModTime
+			latest[unit] = file.ModTime.Time
 		}
 	}
 	cutoff := time.Now().Add(-time.Duration(j.SettleSeconds) * time.Second)

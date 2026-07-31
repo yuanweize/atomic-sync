@@ -13,7 +13,7 @@
 
 ---
 
-Atomic Sync 把一个电影目录、整部剧或一个季视为不可拆分的复制单元：先暂存、再校验、然后发布，并再次校验最终目标。**v0.1.0 仅支持复制**：程序绝不删除来源，API 与 Runner 都会拒绝 `mode: move` 和 `deleteSource: true`。
+Atomic Sync 把一个电影目录、整部剧或一个季视为不可拆分的复制单元：先暂存、再校验、然后发布，并再次校验最终目标。**v0.1.x 仅支持复制**：程序绝不删除来源，API 与 Runner 都会拒绝 `mode: move` 和 `deleteSource: true`。
 
 它还会检查 mergerfs 合并视图隐藏的真实情况：两个底层分支出现同名目录，**不代表归档已经完成**。程序会比较 StorageBox 与 GD 等物理分支中每个单元的相对文件路径和大小，区分已归档、待强校验、部分归档、待归档、冲突与空目录。
 
@@ -41,7 +41,7 @@ flowchart LR
 ```
 
 - 新任务默认 `dry-run`。
-- v0.1.0 仅支持复制；API 与 Runner 拒绝移动模式和 `deleteSource`，官方镜像不包含 rclone 的 `purge` 命令。
+- v0.1.x 仅支持复制；API 与 Runner 拒绝移动模式和 `deleteSource`，官方镜像不包含 rclone 的 `purge` 命令。
 - 目标已存在时默认安全失败。
 - `merge-immutable` 只补缺失内容，不覆盖同路径不同文件。
 - 执行单元必须是固定分组深度上的目录；浅层文件、父子单元重叠会在发布前让整个运行安全失败。
@@ -101,7 +101,7 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 docker compose ps
 ```
 
-打开 `http://127.0.0.1:8088`，输入 API Token。第一次只创建“复制 + 仅演练”任务。默认来源挂载为容器内 `/sources/media`，并且是只读的。NUE 的 v0.1.0 首发会把 `/data/storagebox/media` 只读挂载到 Atomic Sync，并先分别运行电影、电视剧 dry-run 任务，再考虑单个复制 canary。
+打开 `http://127.0.0.1:8088`，输入 API Token。第一次只创建“复制 + 仅演练”任务。默认来源挂载为容器内 `/sources/media`，并且是只读的。NUE 的 v0.1.x 首发会把 `/data/storagebox/media` 只读挂载到 Atomic Sync，并先分别运行电影、电视剧 dry-run 任务，再考虑单个复制 canary。
 
 ## 生产部署
 
@@ -110,7 +110,7 @@ docker compose ps
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.1.0@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.1.1@sha256:<release-digest>
 ```
 
 把服务嵌入其他 Compose 项目时不要使用 `build: .`，否则构建上下文会变成对方项目目录。
@@ -145,15 +145,15 @@ sha256sum -c SHA256SUMS
 | `ATOMIC_LOG_FORMAT` | `json` | `json` 或文本结构化日志 |
 | `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | 明确的 rclone 配置路径 |
 
-程序不会修改 `.env` 或 `rclone.conf`。任务、目标归属、运行历史与分支分析结果均保存在 `atomic-sync.db`。本地来源只能位于 `/sources/...`，本地目标只能位于 `/destinations/...`，远程来源会被拒绝。v0.1.0 必须复制完整目录单元，不接受 include/exclude 过滤器。
+程序不会修改 `.env` 或 `rclone.conf`。任务、目标归属、运行历史与分支分析结果均保存在 `atomic-sync.db`。本地来源只能位于 `/sources/...`，本地目标只能位于 `/destinations/...`，远程来源会被拒绝。v0.1.x 必须复制完整目录单元，不接受 include/exclude 过滤器。
 
 ## 真实保证边界
 
-Atomic Sync 提供分阶段、可校验的复制发布协议。对象存储的目录操作不是真正的 ACID 事务，目标侧 `moveto` 可能由多个对象操作组成；v0.1.0 始终保留来源。
+Atomic Sync 提供分阶段、可校验的复制发布协议。对象存储的目录操作不是真正的 ACID 事务，目标侧 `moveto` 可能由多个对象操作组成；v0.1.x 始终保留来源。
 
 `merge-immutable` 也不是完全原子的：发现后续冲突前，部分缺失对象可能已经补到目标；但它不会覆盖不同的目标对象。即使运行成功，隐藏暂存副本也会作为恢复与审计材料保留，Atomic Sync 不会自动清理它。新目标的提升操作会把目标侧暂存目录移动为最终目录，因此不会留下单独的暂存副本。
 
-来源删除不属于 v0.1.0 的信任边界。必须先停止 Sonarr/Radarr 导入器及该单元的所有其他写入者，独立校验最终目标，确认恢复副本，只用外部管理工具删除经过审核的那一个来源目录，重新扫描后再恢复写入。详见[运维文档中的人工来源清理流程](docs/OPERATIONS.md#manual-source-cleanup-outside-atomic-sync)。
+来源删除不属于 v0.1.x 的信任边界。必须先停止 Sonarr/Radarr 导入器及该单元的所有其他写入者，独立校验最终目标，确认恢复副本，只用外部管理工具删除经过审核的那一个来源目录，重新扫描后再恢复写入。详见[运维文档中的人工来源清理流程](docs/OPERATIONS.md#manual-source-cleanup-outside-atomic-sync)。
 
 SQLite 架构只支持一个 Atomic Sync 实例，不要让多个副本共享同一个数据库。
 

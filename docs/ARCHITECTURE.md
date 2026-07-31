@@ -42,9 +42,9 @@ stateDiagram-v2
 
 `failed` is terminal for one run record. A retry creates a new run and preserves the previous evidence and staging path.
 
-## v0.1.0 safety boundary
+## v0.1.x safety boundary
 
-Version 0.1.0 is copy-only. `mode: move` and `deleteSource: true` are rejected by both model/API validation and the Runner's execution-boundary validation. The official minimal rclone build omits `purge`, so the process has no source-deletion command to invoke. Source cleanup is a separate, quiesced operator workflow documented in [Operations](OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
+Version 0.1.x is copy-only. `mode: move` and `deleteSource: true` are rejected by both model/API validation and the Runner's execution-boundary validation. The official minimal rclone build omits `purge`, so the process has no source-deletion command to invoke. Source cleanup is a separate, quiesced operator workflow documented in [Operations](OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
 
 The NUE first rollout mounts the physical StorageBox source read-only and starts with separate movie and TV dry-run jobs. Enabling a destination write canary does not change the source mount to read-write.
 
@@ -101,6 +101,6 @@ For a new destination, verified staging is moved to the final path with `--immut
 
 A new destination ends with an exact bidirectional source-to-final check. `merge-immutable` ends with a one-way completeness check so reviewed destination-only content can remain. `verify: checksum` adds `--download`, reading the full contents of every compared file from both endpoints. `verify: size` adds `--size-only` and compares paths and byte counts without reading file contents.
 
-No successful or failed v0.1.0 transition deletes the source. The run reaches `completed` only after final verification, but completion means “verified copy published,” not “source removed.”
+No successful or failed v0.1.x transition deletes the source. The run reaches `completed` only after final verification, but completion means “verified copy published,” not “source removed.”
 
 Remote object stores do not provide an ACID directory rename. The protocol guarantees preservation and verification boundaries, not a distributed filesystem transaction.

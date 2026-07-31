@@ -2,7 +2,7 @@ name: atomic-sync
 
 services:
   atomic-sync:
-    image: ${ATOMIC_IMAGE:-ghcr.io/yuanweize/atomic-sync:0.1.0}
+    image: ${ATOMIC_IMAGE:-ghcr.io/yuanweize/atomic-sync:0.1.1}
     restart: unless-stopped
     init: true
     user: "1000:1000"

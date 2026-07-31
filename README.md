@@ -19,7 +19,7 @@
 
 ---
 
-Atomic Sync copies a movie directory, a complete show, or one season as a single migration unit. It stages the unit, verifies it, publishes it, and verifies the final destination again. **Version 0.1.0 is copy-only:** it never deletes source data, and both `mode: move` and `deleteSource: true` are rejected by the API and Runner.
+Atomic Sync copies a movie directory, a complete show, or one season as a single migration unit. It stages the unit, verifies it, publishes it, and verifies the final destination again. **Version 0.1.x is copy-only:** it never deletes source data, and both `mode: move` and `deleteSource: true` are rejected by the API and Runner.
 
 It also understands the part a union filesystem hides: the same folder name on two mergerfs branches does **not** prove that the archive is complete. Atomic Sync compares the physical source and destination inventories and reports what is actually archived, partial, pending, conflicting, or empty.
 
@@ -47,7 +47,7 @@ flowchart LR
 ## What makes it safe
 
 - **Dry-run by default.** Omitted API values and the UI both create a dry run.
-- **Copy-only in v0.1.0.** The API and Runner reject move mode and `deleteSource`; the official image does not contain rclone's `purge` command.
+- **Copy-only in v0.1.x.** The API and Runner reject move mode and `deleteSource`; the official image does not contain rclone's `purge` command.
 - **Fail-closed conflicts.** Existing destination units stop publication unless `merge-immutable` is explicitly selected.
 - **Immutable merge.** Missing files may be added, but an existing different file is never overwritten.
 - **Directory-only units.** Execution requires a directory at one fixed grouping depth. Shallow files and parent/child unit overlap stop the run before publication.
@@ -113,7 +113,7 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 docker compose ps
 ```
 
-Open `http://127.0.0.1:8088`, enter the API token, and create a **dry-run copy** job first. The default source mount is `/sources/media` and is read-only. The NUE v0.1.0 rollout keeps `/data/storagebox/media` mounted read-only inside Atomic Sync and runs separate movie/TV dry-run jobs before any copy canary.
+Open `http://127.0.0.1:8088`, enter the API token, and create a **dry-run copy** job first. The default source mount is `/sources/media` and is read-only. The NUE v0.1.x rollout keeps `/data/storagebox/media` mounted read-only inside Atomic Sync and runs separate movie/TV dry-run jobs before any copy canary.
 
 ### Production image
 
@@ -122,7 +122,7 @@ Release tags publish signed `linux/amd64` and `linux/arm64` images with SBOM and
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.1.0@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.1.1@sha256:<release-digest>
 ```
 
 Pin the digest from the release before deployment. Do not use `build: .` when embedding the service into an unrelated Compose project.
@@ -158,15 +158,15 @@ sha256sum -c SHA256SUMS
 | `ATOMIC_LOG_FORMAT` | `json` | `json` or text structured logs |
 | `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | Explicit rclone configuration path |
 
-The application never writes `.env` or `rclone.conf`. Jobs, assignments, runs, and branch analyses are stored in `atomic-sync.db`. Local sources are restricted to `/sources/...`, local destinations to `/destinations/...`, and remote sources are rejected. Jobs always copy a complete directory unit; include/exclude filters are rejected in v0.1.0.
+The application never writes `.env` or `rclone.conf`. Jobs, assignments, runs, and branch analyses are stored in `atomic-sync.db`. Local sources are restricted to `/sources/...`, local destinations to `/destinations/...`, and remote sources are rejected. Jobs always copy a complete directory unit; include/exclude filters are rejected in v0.1.x.
 
 ## Guarantees and boundaries
 
-Atomic Sync provides a staged, verified copy-publication protocol. Object-storage directory operations are not ACID transactions, and a destination-side `moveto` may be implemented as multiple object operations. The source is always retained by v0.1.0.
+Atomic Sync provides a staged, verified copy-publication protocol. Object-storage directory operations are not ACID transactions, and a destination-side `moveto` may be implemented as multiple object operations. The source is always retained by v0.1.x.
 
 `merge-immutable` is deliberately not fully atomic: it can add missing objects before a later conflict is discovered. It never overwrites a different destination object. Its hidden staging copy is retained even after success as recovery and audit material; Atomic Sync never issues an automatic staging cleanup. For a new destination, promotion moves the destination-side staging directory into its final name, so there is no separate staging copy to clean.
 
-Source deletion is outside the v0.1.0 trust boundary. Stop Sonarr/Radarr importers and every other writer for the selected unit, independently verify the final destination, take or confirm a recovery copy, delete only that reviewed source directory with an external administrative tool, and rescan before resuming writes. See [Operations](docs/OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
+Source deletion is outside the v0.1.x trust boundary. Stop Sonarr/Radarr importers and every other writer for the selected unit, independently verify the final destination, take or confirm a recovery copy, delete only that reviewed source directory with an external administrative tool, and rescan before resuming writes. See [Operations](docs/OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
 
 SQLite makes one Atomic Sync instance the supported topology. Do not run multiple replicas against the same database.
 

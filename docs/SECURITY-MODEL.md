@@ -2,7 +2,7 @@
 
 ## Protected assets
 
-- Source media, which the reference v0.1.0 deployment mounts read-only and Atomic Sync never deletes.
+- Source media, which the reference v0.1.x deployment mounts read-only and Atomic Sync never deletes.
 - Destination media, which immutable publication must not overwrite.
 - Hidden destination staging, including successful `merge-immutable` staging retained for recovery and audit.
 - rclone credentials and cloud tokens.
@@ -17,7 +17,7 @@ The HTTP client, Atomic Sync process, rclone child process, local/CIFS source, c
 
 | Threat | Control |
 |---|---|
-| Unauthenticated source deletion | v0.1.0 rejects move/`deleteSource`, exposes no cleanup endpoint, and the official image omits rclone `purge`; Bearer auth still protects all write APIs |
+| Unauthenticated source deletion | v0.1.x rejects move/`deleteSource`, exposes no cleanup endpoint, and the official image omits rclone `purge`; Bearer auth still protects all write APIs |
 | Timing comparison of token | Constant-time byte comparison |
 | Weak or missing remote-access token | Tokens shorter than 32 characters are rejected; an empty token is allowed only on a loopback listener |
 | Stored XSS through job IDs/names | Server-generated constrained IDs; DOM `textContent`; CSP with no inline script |

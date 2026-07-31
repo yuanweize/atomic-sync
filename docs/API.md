@@ -30,9 +30,9 @@ The UI loads without authentication and asks for the token before protected requ
 
 Unknown JSON fields, multiple JSON documents, bodies over 1 MiB, and invalid enum/path values are rejected.
 
-## v0.1.0 execution boundary
+## v0.1.x execution boundary
 
-Version 0.1.0 is intentionally copy-only. Jobs must use `"mode": "copy"` and `"deleteSource": false`; create/update requests with `move` or source deletion enabled are rejected. The Runner repeats this validation when a stored job starts, so a legacy or manually altered database record cannot bypass the API boundary. Atomic Sync does not expose a source-cleanup endpoint.
+Version 0.1.x is intentionally copy-only. Jobs must use `"mode": "copy"` and `"deleteSource": false`; create/update requests with `move` or source deletion enabled are rejected. The Runner repeats this validation when a stored job starts, so a legacy or manually altered database record cannot bypass the API boundary. Atomic Sync does not expose a source-cleanup endpoint.
 
 Source cleanup is an external administrative operation. Stop every writer for the selected directory, perform an independent final verification, confirm recovery media, and delete only the reviewed unit outside Atomic Sync. See [Operations](OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
 
@@ -88,6 +88,6 @@ A media file above that boundary is shallow; a discovery containing both a paren
 
 The source-to-staging check is bidirectional and exact within the job's filter set: extra, missing, or different selected staging objects fail the run. A new destination receives another bidirectional exact check. Only `merge-immutable` uses a one-way final completeness check, allowing reviewed destination-only posters, subtitles, and previously archived objects to remain.
 
-`include` and `exclude` filters are rejected in v0.1.0. Every executable directory unit is copied and verified in full, preventing a filter from publishing an empty shell or silently splitting related media metadata from the unit. Move jobs are unsupported as well.
+`include` and `exclude` filters are rejected in v0.1.x. Every executable directory unit is copied and verified in full, preventing a filter from publishing an empty shell or silently splitting related media metadata from the unit. Move jobs are unsupported as well.
 
 Local sources must be below `/sources`; local destinations must be below `/destinations`. Remote sources and backslashes in local paths are rejected. This prevents an API-token holder from selecting control-plane files such as `/config/rclone.conf` as media. A configured rclone remote may be used as a destination, so the API token remains a full administrative credential for every destination remote present in the mounted rclone configuration.

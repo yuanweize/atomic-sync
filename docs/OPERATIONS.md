@@ -10,7 +10,7 @@ Before deployment:
 4. Copy or mount a least-privilege `rclone.conf`; never include it in an image build context.
 5. Bind the UI to loopback, Tailscale, or an authenticated reverse proxy.
 6. Set a random `ATOMIC_API_TOKEN` of at least 32 bytes.
-7. Mount the physical source branch read-only. Version 0.1.0 is copy-only and never requires source write access.
+7. Mount the physical source branch read-only. Version 0.1.x is copy-only and never requires source write access.
 8. Do not mount an entire host `/data` tree when only one source path is required.
 9. Verify that each physical source is mounted with the expected filesystem type (`findmnt --target /path/to/source`) before starting the container or running analysis. The Compose bind uses `create_host_path: false`, but an offline filesystem can leave an existing empty mountpoint behind.
 10. Confirm the official image's local/Drive/crypt backend set matches the deployment.
@@ -32,7 +32,7 @@ For a quota-sensitive first canary, set all four concurrency controls to `1`: `A
 
 Do not make the source writable to Atomic Sync. The API and Runner reject `mode: move` and `deleteSource: true`, and the official image omits rclone's `purge` command.
 
-### NUE v0.1.0 rollout
+### NUE v0.1.x rollout
 
 For NUE, bind `/data/storagebox/media` read-only inside the Atomic Sync container and keep the mergerfs union out of the execution path. Create separate movie and TV jobs, both as `copy + dryRun`, and run branch analysis serially while Drive quota is healthy. Recreate only the Atomic Sync service; do not restart or recreate Sonarr, Radarr, mergerfs, or the rclone mount. A later copy canary still uses the read-only source mount.
 
@@ -61,7 +61,7 @@ Remote `.atomic-sync-staging` directories are recovery material, not cache. `mer
 
 ## Manual source cleanup outside Atomic Sync
 
-Atomic Sync v0.1.0 never deletes source files. If an operator later decides to reclaim StorageBox space, perform cleanup outside the application and one reviewed directory at a time:
+Atomic Sync v0.1.x never deletes source files. If an operator later decides to reclaim StorageBox space, perform cleanup outside the application and one reviewed directory at a time:
 
 1. Select a completed unit with a healthy physical source mount and a verified final destination. Do not rely on the mergerfs view or an `archived`/`ready-to-verify` label alone.
 2. Stop every writer that can modify that unit, including Sonarr/Radarr imports, download post-processing, repair scripts, and manual uploads. Confirm there are no active file handles or in-flight transfers.
@@ -71,7 +71,7 @@ Atomic Sync v0.1.0 never deletes source files. If an operator later decides to r
 6. Delete only the reviewed physical source directory with an external administrative tool. Never delete through `/data/merged`, never use a library-root wildcard, and never bulk-clean retained staging in the same change.
 7. Confirm the destination remains readable through the mergerfs consumer path, trigger the appropriate Sonarr/Radarr rescan, inspect logs, and only then resume writers.
 
-This manual procedure is intentionally outside Atomic Sync's API, container permissions, and v0.1.0 guarantee. It requires an operator to manage the remaining verification-to-deletion race while the source is quiescent.
+This manual procedure is intentionally outside Atomic Sync's API, container permissions, and v0.1.x guarantee. It requires an operator to manage the remaining verification-to-deletion race while the source is quiescent.
 
 ## Upgrade
 

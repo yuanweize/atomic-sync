@@ -23,7 +23,7 @@ no files on either branch                        → empty
 
 Destination-only extra files do not reduce source coverage. They may have been archived earlier or created by a media manager. They are never removed by analysis. A unit can therefore be `partial` with 0% source coverage when its two physical branches contain entirely complementary files: the destination already holds part of the merged unit, but none of the files still on the source has reached that destination yet.
 
-Analysis intentionally describes the complete physical unit. Version 0.1.0 rejects `include`/`exclude` filters, move mode, and `deleteSource`; analysis never authorizes or performs source cleanup.
+Analysis intentionally describes the complete physical unit. Version 0.1.x rejects `include`/`exclude` filters, move mode, and `deleteSource`; analysis never authorizes or performs source cleanup.
 
 Any source or destination listing error fails the whole analysis. An exhausted cloud API is never converted into an empty inventory or a false `archived` result.
 
@@ -51,7 +51,7 @@ For a new destination, promotion moves the hidden destination-side staging direc
 
 The analyzer records malformed or scattered physical layouts so operators can repair them, but execution is stricter. A runnable unit must resolve to a directory at one fixed grouping depth: one top-level directory for `folder`/`show`, `Show/Season` for `season`, or exactly the configured `depth`. A shallow media file or a discovered parent/child unit overlap fails the entire run before staging. This prevents a root-level episode and its season directory from being copied as two independent units.
 
-An analysis status, including `ready-to-verify`, is not permission to delete source data. Source cleanup is outside Atomic Sync v0.1.0 and requires the quiesced manual workflow in [Operations](OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
+An analysis status, including `ready-to-verify`, is not permission to delete source data. Source cleanup is outside Atomic Sync v0.1.x and requires the quiesced manual workflow in [Operations](OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
 
 ## Interpreting overlapping folders
 
