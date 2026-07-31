@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -40,21 +41,28 @@ func TestJobValidation(t *testing.T) {
 	}
 	filteredCopy := valid()
 	filteredCopy.Include = []string{"*.mkv"}
-	if err := filteredCopy.Validate(); err != nil {
-		t.Fatalf("filtered copy job rejected: %v", err)
+	if err := filteredCopy.Validate(); err == nil || !strings.Contains(err.Error(), "copied in full") {
+		t.Fatalf("filtered copy job was accepted: %v", err)
+	} else if !errors.Is(err, ErrInvalidJob) {
+		t.Fatalf("validation error does not match ErrInvalidJob: %v", err)
 	}
 	tests := map[string]func(*Job){
-		"unsafe id":        func(job *Job) { job.ID = `x"><script>` },
-		"root source":      func(job *Job) { job.Source = "/" },
-		"remote root":      func(job *Job) { job.Source = "GD:" },
-		"overlap local":    func(job *Job) { job.Destinations[0].Path = "/sources/storagebox/movies/archive" },
-		"overlap remote":   func(job *Job) { job.Source, job.Destinations[0].Path = "GD:data", "GD:data/media" },
-		"zero weight":      func(job *Job) { job.Destinations[0].Weight = 0 },
-		"legacy sync":      func(job *Job) { job.Mode = "sync" },
-		"high concurrency": func(job *Job) { job.Concurrency = 9 },
-		"bad conflict":     func(job *Job) { job.ConflictPolicy = "overwrite" },
-		"bad filter":       func(job *Job) { job.Include = []string{"*.mkv\n--delete"} },
-		"filtered move":    func(job *Job) { job.Mode, job.Include = "move", []string{"*.mkv"} },
+		"unsafe id":         func(job *Job) { job.ID = `x"><script>` },
+		"root source":       func(job *Job) { job.Source = "/" },
+		"config exfil":      func(job *Job) { job.Source = "/config" },
+		"backslash escape":  func(job *Job) { job.Source = `/sources\\media` },
+		"remote source":     func(job *Job) { job.Source = "GD:data/media" },
+		"remote root":       func(job *Job) { job.Source = "GD:" },
+		"overlap local":     func(job *Job) { job.Destinations[0].Path = "/sources/storagebox/movies/archive" },
+		"overlap remote":    func(job *Job) { job.Source, job.Destinations[0].Path = "GD:data", "GD:data/media" },
+		"zero weight":       func(job *Job) { job.Destinations[0].Weight = 0 },
+		"legacy sync":       func(job *Job) { job.Mode = "sync" },
+		"high concurrency":  func(job *Job) { job.Concurrency = 9 },
+		"bad conflict":      func(job *Job) { job.ConflictPolicy = "overwrite" },
+		"bad filter":        func(job *Job) { job.Include = []string{"*.mkv\n--delete"} },
+		"move mode":         func(job *Job) { job.Mode = "move" },
+		"source deletion":   func(job *Job) { job.DeleteSource = true },
+		"local dest escape": func(job *Job) { job.Destinations[0].Path = "/data/archive" },
 		"duplicate dest": func(job *Job) {
 			job.Destinations = append(job.Destinations, Destination{Name: "gd-primary", Path: "GD2:data/media", Weight: 1})
 		},
@@ -70,5 +78,29 @@ func TestJobValidation(t *testing.T) {
 				t.Fatalf("invalid job accepted: %#v, error=%v", job, err)
 			}
 		})
+	}
+}
+
+func TestPlacementOverlapAcrossJobs(t *testing.T) {
+	movies := Job{
+		Source:       "/sources/storagebox/movies",
+		Destinations: []Destination{{Name: "gd", Path: "GD:data/media/movies", Weight: 1}},
+	}
+	tv := Job{
+		Source:       "/sources/storagebox/tvseries",
+		Destinations: []Destination{{Name: "gd", Path: "GD:data/media/tvseries", Weight: 1}},
+	}
+	if movies.PlacementOverlaps(tv) {
+		t.Fatal("sibling movie and TV jobs must not overlap")
+	}
+	nested := tv
+	nested.Source = "/sources/storagebox/movies/new"
+	if !movies.PlacementOverlaps(nested) {
+		t.Fatal("nested local source was not detected")
+	}
+	nested = tv
+	nested.Destinations[0].Path = "GD:data/media/movies/archive"
+	if !movies.PlacementOverlaps(nested) {
+		t.Fatal("nested remote destination was not detected")
 	}
 }

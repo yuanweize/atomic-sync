@@ -5,7 +5,9 @@ import (
 	"strings"
 )
 
-// UnitFor maps an item path to its indivisible migration unit.
+// UnitFor maps a file path to its indivisible directory unit. Files at the
+// unit boundary are rejected so rclone copy can never reinterpret a file as a
+// destination directory.
 func UnitFor(relative, strategy string, depth int) string {
 	relative = strings.ReplaceAll(relative, `\\`, "/")
 	if strings.HasPrefix(relative, "/") {
@@ -22,15 +24,19 @@ func UnitFor(relative, strategy string, depth int) string {
 	n := 1
 	switch strategy {
 	case "season":
-		// Show/file.ext is still one show unit; Show/Season/file.ext is a
-		// season unit. This prevents a stray root episode becoming its own unit.
-		if len(parts) >= 3 {
-			n = 2
-		}
+		n = 2
 	case "depth":
-		n = min(max(1, depth), len(parts))
+		if depth < 1 {
+			return ""
+		}
+		n = depth
 	case "show", "folder":
 		n = 1
+	default:
+		return ""
+	}
+	if len(parts) <= n {
+		return ""
 	}
 	return strings.Join(parts[:n], "/")
 }

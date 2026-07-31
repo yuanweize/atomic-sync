@@ -102,6 +102,15 @@ func TestStoreLifecycle(t *testing.T) {
 	if err != nil || len(analyses) != 1 {
 		t.Fatalf("analyses=%#v err=%v", analyses, err)
 	}
+	if err = database.DeleteAnalysis(ctx, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = database.Analysis(ctx, job.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("explicit analysis delete failed: %v", err)
+	}
+	if err = database.SaveAnalysis(ctx, analysis); err != nil {
+		t.Fatal(err)
+	}
 	stored.Name = "Updated again"
 	if err = database.SaveJob(ctx, stored); err != nil {
 		t.Fatal(err)

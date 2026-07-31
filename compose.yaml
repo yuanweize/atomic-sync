@@ -14,7 +14,10 @@ services:
       ATOMIC_LISTEN: ":8080"
       ATOMIC_DATA_DIR: /data
       ATOMIC_RCLONE_BIN: /usr/local/bin/rclone
-      ATOMIC_MAX_CONCURRENCY: ${ATOMIC_MAX_CONCURRENCY:-4}
+      ATOMIC_MAX_CONCURRENCY: ${ATOMIC_MAX_CONCURRENCY:-2}
+      ATOMIC_RCLONE_TRANSFERS: ${ATOMIC_RCLONE_TRANSFERS:-2}
+      ATOMIC_RCLONE_CHECKERS: ${ATOMIC_RCLONE_CHECKERS:-2}
+      ATOMIC_RCLONE_TPS_LIMIT: ${ATOMIC_RCLONE_TPS_LIMIT:-2}
       ATOMIC_LOG_FORMAT: json
       ATOMIC_API_TOKEN: ${ATOMIC_API_TOKEN:?set ATOMIC_API_TOKEN in .env}
       RCLONE_CONFIG: /config/rclone/rclone.conf
@@ -37,7 +40,7 @@ services:
         bind:
           create_host_path: false
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777
     cap_drop:
       - ALL
     security_opt:

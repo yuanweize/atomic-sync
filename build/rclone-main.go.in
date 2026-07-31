@@ -1,10 +1,12 @@
-// Atomic Sync ships a deliberately narrow rclone CLI. Only the local and
-// Google Drive backends, plus commands exercised by the engine, are linked.
+// Atomic Sync ships a deliberately narrow rclone CLI. Only the local,
+// Google Drive, and crypt backends, plus commands exercised by the engine,
+// are linked.
 // This reduces the runtime attack surface without changing rclone semantics
 // for the supported StorageBox-to-GD deployment.
 package main
 
 import (
+	_ "github.com/rclone/rclone/backend/crypt"
 	_ "github.com/rclone/rclone/backend/drive"
 	_ "github.com/rclone/rclone/backend/local"
 	"github.com/rclone/rclone/cmd"
@@ -13,7 +15,6 @@ import (
 	_ "github.com/rclone/rclone/cmd/lsf"
 	_ "github.com/rclone/rclone/cmd/lsjson"
 	_ "github.com/rclone/rclone/cmd/moveto"
-	_ "github.com/rclone/rclone/cmd/purge"
 	_ "github.com/rclone/rclone/cmd/version"
 )
 

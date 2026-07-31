@@ -10,12 +10,15 @@ import (
 )
 
 type Config struct {
-	Listen         string
-	DataDir        string
-	APIToken       string
-	RcloneBin      string
-	MaxConcurrency int
-	LogFormat      string
+	Listen          string
+	DataDir         string
+	APIToken        string
+	RcloneBin       string
+	MaxConcurrency  int
+	RcloneTransfers int
+	RcloneCheckers  int
+	RcloneTPSLimit  int
+	LogFormat       string
 }
 
 func Load() Config {
@@ -23,8 +26,11 @@ func Load() Config {
 	return Config{
 		Listen: env("ATOMIC_LISTEN", "127.0.0.1:8080"), DataDir: data,
 		APIToken: strings.TrimSpace(os.Getenv("ATOMIC_API_TOKEN")), RcloneBin: env("ATOMIC_RCLONE_BIN", "rclone"),
-		MaxConcurrency: intEnv("ATOMIC_MAX_CONCURRENCY", 4),
-		LogFormat:      env("ATOMIC_LOG_FORMAT", "json"),
+		MaxConcurrency:  intEnv("ATOMIC_MAX_CONCURRENCY", 2),
+		RcloneTransfers: intEnv("ATOMIC_RCLONE_TRANSFERS", 2),
+		RcloneCheckers:  intEnv("ATOMIC_RCLONE_CHECKERS", 2),
+		RcloneTPSLimit:  intEnv("ATOMIC_RCLONE_TPS_LIMIT", 2),
+		LogFormat:       env("ATOMIC_LOG_FORMAT", "json"),
 	}
 }
 

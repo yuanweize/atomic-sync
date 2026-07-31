@@ -1,13 +1,18 @@
-# syntax=docker/dockerfile:1.7
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS build
 WORKDIR /src
+ENV GOPROXY=https://proxy.golang.org|direct \
+    GOTOOLCHAIN=local
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 COPY go.mod go.sum ./
-RUN go mod download
+RUN for attempt in 1 2 3; do \
+      go mod download && exit 0; \
+      test "$attempt" -eq 3 && exit 1; \
+      sleep $((attempt * 3)); \
+    done
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
@@ -20,6 +25,8 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 # lifted, so the runtime image does not have to waive known HIGH findings.
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS rclone-build
 WORKDIR /src
+ENV GOPROXY=https://proxy.golang.org|direct \
+    GOTOOLCHAIN=local
 ARG TARGETOS
 ARG TARGETARCH
 ARG RCLONE_VERSION=v1.74.4
@@ -27,10 +34,14 @@ COPY build/rclone-main.go.in ./main.go
 RUN go mod init atomic-sync-rclone \
     && go mod edit -require=github.com/rclone/rclone@$RCLONE_VERSION \
     && go mod edit -require=golang.org/x/text@v0.39.0 \
-    && go mod edit -require=google.golang.org/grpc@v1.82.1 \
-    && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -mod=mod -trimpath \
-      -ldflags="-s -w -X github.com/rclone/rclone/fs.Version=${RCLONE_VERSION#v}" \
-      -o /out/rclone ./main.go
+    && go mod edit -require=google.golang.org/grpc@v1.82.1
+RUN for attempt in 1 2 3; do \
+      CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -mod=mod -trimpath \
+        -ldflags="-s -w -X github.com/rclone/rclone/fs.Version=${RCLONE_VERSION#v}" \
+        -o /out/rclone ./main.go && exit 0; \
+      test "$attempt" -eq 3 && exit 1; \
+      sleep $((attempt * 3)); \
+    done
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 ARG VERSION=dev

@@ -18,10 +18,7 @@ func TestUnitFor(t *testing.T) {
 	}
 }
 
-func TestUnitForRejectsTraversalAndGroupsRootEpisodes(t *testing.T) {
-	if got := UnitFor("Show/E01.mkv", "season", 0); got != "Show" {
-		t.Fatalf("root episode became a file unit: %q", got)
-	}
+func TestUnitForRejectsTraversalAndShallowFiles(t *testing.T) {
 	for _, unsafe := range []string{"../movie/file.mkv", "/absolute/file.mkv", `..\\movie\\file.mkv`} {
 		if got := UnitFor(unsafe, "folder", 0); got != "" {
 			t.Fatalf("unsafe path %q produced unit %q", unsafe, got)
@@ -29,6 +26,20 @@ func TestUnitForRejectsTraversalAndGroupsRootEpisodes(t *testing.T) {
 	}
 	if got := UnitFor(`Show\\Season 02\\E01.mkv`, "season", 0); got != "Show/Season 02" {
 		t.Fatalf("backslash normalization failed: %q", got)
+	}
+	for _, test := range []struct {
+		path     string
+		strategy string
+		depth    int
+	}{
+		{path: "movie.mkv", strategy: "folder"},
+		{path: "Show/E01.mkv", strategy: "season"},
+		{path: "Show/Season 01", strategy: "depth", depth: 2},
+		{path: "Show/E01.mkv", strategy: "unknown"},
+	} {
+		if got := UnitFor(test.path, test.strategy, test.depth); got != "" {
+			t.Fatalf("shallow path %q produced %s unit %q", test.path, test.strategy, got)
+		}
 	}
 }
 

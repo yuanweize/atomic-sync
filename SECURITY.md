@@ -20,7 +20,7 @@ Maintainers will acknowledge a complete report as soon as practical, validate im
 
 - Pin a signed release image by digest.
 - Set `ATOMIC_API_TOKEN` and bind to loopback, Tailscale, or an authenticated proxy.
-- Keep the source mount read-only until a reviewed move canary.
+- Keep the source mount read-only. Version 0.1.0 is copy-only and rejects every source-deletion request.
 - Mount only dedicated paths; do not expose the entire host filesystem.
 - Protect `rclone.conf` and the SQLite state directory with least privilege.
 - Review [the threat model](docs/SECURITY-MODEL.md) before production use.

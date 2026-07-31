@@ -19,6 +19,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yuanweize/atomic-sync/internal/buildinfo"
@@ -29,7 +30,10 @@ import (
 
 const maxJSONBody = 1 << 20
 
-var errPlacementLocked = errors.New("placement settings cannot change after units have been assigned; create a new job")
+var (
+	errPlacementLocked = errors.New("placement settings cannot change after units have been assigned; create a new job")
+	errJobOverlap      = errors.New("job paths overlap another configured job")
+)
 
 //go:embed ui/*
 var ui embed.FS
@@ -39,6 +43,9 @@ type API struct {
 	runner *engine.Runner
 	token  string
 	mux    *http.ServeMux
+	// jobsMu keeps a persisted job snapshot stable while a run or analysis
+	// becomes active, and serializes cross-job overlap checks with mutations.
+	jobsMu sync.Mutex
 }
 
 func New(s *store.Store, runner *engine.Runner, token string) *API {
@@ -109,6 +116,12 @@ func (a *API) jobs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
+	if err = a.validateNoJobOverlap(r.Context(), job); err != nil {
+		respond(w, nil, err)
+		return
+	}
 	if err = a.store.SaveJob(r.Context(), job); err != nil {
 		respond(w, nil, err)
 		return
@@ -135,6 +148,8 @@ func (a *API) job(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteJob(w http.ResponseWriter, r *http.Request, id string) {
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
 	if a.runner.IsActive(id) {
 		writeError(w, http.StatusConflict, "cannot delete a running job")
 		return
@@ -143,6 +158,13 @@ func (a *API) deleteJob(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (a *API) updateJob(w http.ResponseWriter, r *http.Request, id string) {
+	job, dryRunProvided, err := decodeJob(w, r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
 	if a.runner.IsActive(id) {
 		writeError(w, http.StatusConflict, "cannot update a running job")
 		return
@@ -150,11 +172,6 @@ func (a *API) updateJob(w http.ResponseWriter, r *http.Request, id string) {
 	current, err := a.store.Job(r.Context(), id)
 	if err != nil {
 		respond(w, nil, err)
-		return
-	}
-	job, dryRunProvided, err := decodeJob(w, r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	job.ID, job.CreatedAt = id, current.CreatedAt
@@ -170,12 +187,32 @@ func (a *API) updateJob(w http.ResponseWriter, r *http.Request, id string) {
 		respond(w, nil, err)
 		return
 	}
+	if err = a.validateNoJobOverlap(r.Context(), job); err != nil {
+		respond(w, nil, err)
+		return
+	}
 	if err = a.store.SaveJob(r.Context(), job); err != nil {
 		respond(w, nil, err)
 		return
 	}
 	saved, err := a.store.Job(r.Context(), id)
 	respond(w, saved, err)
+}
+
+func (a *API) validateNoJobOverlap(ctx context.Context, candidate model.Job) error {
+	jobs, err := a.store.Jobs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, existing := range jobs {
+		if existing.ID == candidate.ID {
+			continue
+		}
+		if candidate.PlacementOverlaps(existing) {
+			return fmt.Errorf("%w: %s", errJobOverlap, existing.Name)
+		}
+	}
+	return nil
 }
 
 func (a *API) validatePlacementUpdate(ctx context.Context, current, next model.Job) error {
@@ -193,8 +230,14 @@ func (a *API) validatePlacementUpdate(ctx context.Context, current, next model.J
 }
 
 func (a *API) run(w http.ResponseWriter, r *http.Request) {
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
 	job, err := a.store.Job(r.Context(), r.PathValue("id"))
 	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if err = a.validateNoJobOverlap(r.Context(), job); err != nil {
 		respond(w, nil, err)
 		return
 	}
@@ -220,8 +263,14 @@ func (a *API) analysis(w http.ResponseWriter, r *http.Request) {
 		respond(w, analysis, err)
 		return
 	}
+	a.jobsMu.Lock()
+	defer a.jobsMu.Unlock()
 	job, err := a.store.Job(r.Context(), jobID)
 	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	if err = a.validateNoJobOverlap(r.Context(), job); err != nil {
 		respond(w, nil, err)
 		return
 	}
@@ -309,8 +358,8 @@ func (a *API) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		valid := len(provided) == len(a.token) && subtle.ConstantTimeCompare([]byte(provided), []byte(a.token)) == 1
+		provided, hasBearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		valid := hasBearer && provided != "" && !strings.ContainsAny(provided, " \t") && len(provided) == len(a.token) && subtle.ConstantTimeCompare([]byte(provided), []byte(a.token)) == 1
 		if !valid {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="Atomic Sync"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -341,9 +390,11 @@ func respond(w http.ResponseWriter, value any, err error) {
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		status, message = http.StatusNotFound, "not found"
+	case errors.Is(err, model.ErrInvalidJob):
+		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, engine.ErrJobActive), errors.Is(err, engine.ErrJobPaused):
 		status, message = http.StatusConflict, err.Error()
-	case errors.Is(err, errPlacementLocked):
+	case errors.Is(err, errPlacementLocked), errors.Is(err, errJobOverlap):
 		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, context.Canceled):
 		status, message = http.StatusServiceUnavailable, "service is shutting down"

@@ -12,9 +12,12 @@ func TestLoad(t *testing.T) {
 	t.Setenv("ATOMIC_API_TOKEN", "  "+token+"  ")
 	t.Setenv("ATOMIC_RCLONE_BIN", "/usr/bin/rclone")
 	t.Setenv("ATOMIC_MAX_CONCURRENCY", "7")
+	t.Setenv("ATOMIC_RCLONE_TRANSFERS", "3")
+	t.Setenv("ATOMIC_RCLONE_CHECKERS", "5")
+	t.Setenv("ATOMIC_RCLONE_TPS_LIMIT", "2")
 	t.Setenv("ATOMIC_LOG_FORMAT", "text")
 	config := Load()
-	if config.Listen != "127.0.0.1:9090" || config.APIToken != token || config.MaxConcurrency != 7 || config.LogFormat != "text" {
+	if config.Listen != "127.0.0.1:9090" || config.APIToken != token || config.MaxConcurrency != 7 || config.RcloneTransfers != 3 || config.RcloneCheckers != 5 || config.RcloneTPSLimit != 2 || config.LogFormat != "text" {
 		t.Fatalf("unexpected config: %#v", config)
 	}
 	if config.DBPath() != "/tmp/atomic-state/atomic-sync.db" {
@@ -46,7 +49,7 @@ func TestValidateSecurityBoundary(t *testing.T) {
 
 func TestInvalidConcurrencyFallsBack(t *testing.T) {
 	t.Setenv("ATOMIC_MAX_CONCURRENCY", "999")
-	if got := Load().MaxConcurrency; got != 4 {
-		t.Fatalf("got %d, want fallback 4", got)
+	if got := Load().MaxConcurrency; got != 2 {
+		t.Fatalf("got %d, want fallback 2", got)
 	}
 }

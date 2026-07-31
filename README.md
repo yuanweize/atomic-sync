@@ -19,7 +19,7 @@
 
 ---
 
-Atomic Sync moves a movie directory, a complete show, or one season as a single migration unit. It stages the unit, verifies it, publishes it, verifies the final destination again, and only then permits source cleanup.
+Atomic Sync copies a movie directory, a complete show, or one season as a single migration unit. It stages the unit, verifies it, publishes it, and verifies the final destination again. **Version 0.1.0 is copy-only:** it never deletes source data, and both `mode: move` and `deleteSource: true` are rejected by the API and Runner.
 
 It also understands the part a union filesystem hides: the same folder name on two mergerfs branches does **not** prove that the archive is complete. Atomic Sync compares the physical source and destination inventories and reports what is actually archived, partial, pending, conflicting, or empty.
 
@@ -27,53 +27,63 @@ It also understands the part a union filesystem hides: the same folder name on t
 
 A command such as `rclone move --min-age 30d` evaluates age per file. A late subtitle, poster, or episode can remain behind while older files move first, splitting one media unit across storage providers.
 
-Atomic Sync evaluates the newest file in the entire unit. A 30-day stable window means the complete directory must remain unchanged for 30 days before it becomes eligible.
+Atomic Sync evaluates the newest file in the entire unit. A 30-day stable window means the complete directory must remain unchanged for 30 days before it becomes eligible. Eligibility does not authorize deletion: source cleanup is an external, operator-controlled procedure performed only after writers have been stopped.
 
 ```mermaid
 flowchart LR
-  A[Discover stable unit] --> B[Pin destination]
-  B --> C[Copy to hidden staging]
-  C --> D[Verify staging]
-  D --> E{Destination exists?}
-  E -->|No| F[Publish unit]
-  E -->|Yes, fail policy| X[Stop and preserve source]
-  E -->|Immutable merge| G[Copy missing files; never overwrite]
-  F --> H[Verify final destination]
-  G --> H
-  H --> I{Move mode?}
-  I -->|No| J[Complete; source retained]
-  I -->|Yes| K[Delete verified source unit]
+  A[Discover stable directory unit] --> B[Validate fixed hierarchy]
+  B --> C[Pin destination]
+  C --> D[Copy to hidden staging]
+  D --> E[Exact bidirectional staging check]
+  E --> F{Destination exists?}
+  F -->|No| G[Promote staging]
+  F -->|Yes, fail policy| X[Stop; retain source and staging]
+  F -->|Immutable merge| H[Copy missing files; never overwrite]
+  G --> I[Verify source is present at final]
+  H --> I
+  I --> J[Complete; source retained]
 ```
 
 ## What makes it safe
 
 - **Dry-run by default.** Omitted API values and the UI both create a dry run.
+- **Copy-only in v0.1.0.** The API and Runner reject move mode and `deleteSource`; the official image does not contain rclone's `purge` command.
 - **Fail-closed conflicts.** Existing destination units stop publication unless `merge-immutable` is explicitly selected.
-- **Unit-safe cleanup.** Destructive move jobs cannot use file filters, so excluded files can never be swept away by unit-wide cleanup.
 - **Immutable merge.** Missing files may be added, but an existing different file is never overwritten.
-- **Two verification gates.** Source → staging and source → final destination are both checked.
+- **Directory-only units.** Execution requires a directory at one fixed grouping depth. Shallow files and parent/child unit overlap stop the run before publication.
+- **Two verification gates.** Staging must match the complete source unit exactly in both directions. A new destination must also match exactly; only `merge-immutable` uses a one-way final check so reviewed destination-only content can remain.
 - **No shell interpolation.** rclone is launched with an argument vector, not a shell command.
 - **Deterministic placement.** A unit is pinned to one weighted destination in SQLite and stays there across retries.
+- **Cross-job isolation.** Equal or nested source/destination paths cannot be configured in separate jobs.
 - **Lifecycle-aware shutdown.** SIGTERM cancels active work, waits for workers, and marks interrupted records failed on restart while preserving staging.
 - **Hardened container.** UID 1000, read-only root filesystem, zero Linux capabilities, no-new-privileges, and a dedicated state path.
 - **Session-only UI token.** The SPA is public to load; protected APIs require a constant-time Bearer-token check. The token stays in `sessionStorage`.
 
 ## Branch-aware archive status
 
-Atomic Sync lists each physical branch once and compares files inside every atomic unit by relative path and size. This is intentionally metadata-first so a dashboard scan does not read terabytes from a CIFS source. A destructive run still performs the configured checksum or size verification.
+Atomic Sync lists each physical branch once and compares files inside every atomic unit by relative path and size. This is intentionally metadata-first so a dashboard scan does not read terabytes from a CIFS source. An execution still performs the configured checksum or size verification.
 
 | Status | Meaning | Safe next action |
 |---|---|---|
 | `archived` | Destination has content; the source has no files (an empty directory shell may remain) | Confirm mount health and retain the audit record |
-| `ready-to-verify` | Every source path and size exists at the destination, but the source still exists | Run final verification before cleanup |
+| `ready-to-verify` | Every source path and size exists at the destination, but the source still exists | Quiesce writers, run independent final verification, then follow the manual cleanup procedure |
 | `partial` | The destination has the unit but is missing some source files | Immutable merge or investigate |
 | `pending` | Source has files and the destination unit is absent | Archive candidate |
-| `conflict` | The same relative path has a different size or file/directory type | Stop; select the authoritative copy |
+| `conflict` | A relative path has a different size/type, or files exist outside the assigned destination branch | Stop; select the authoritative copy and branch |
 | `empty` | Only an empty directory shell is visible | Review or ignore |
+
+`partial` also covers a split unit whose two branches contain entirely complementary files: it can legitimately show 0% source coverage while GD already contains other files for that movie or show. An empty destination directory alone still counts as `pending`, not partial or archived.
 
 See [Archive analysis](docs/ARCHIVE-ANALYSIS.md) for mergerfs examples and the exact decision rules.
 
 `archived` is inferred from the current physical inventories; it is not historical proof of a completed run. A successful empty source listing is valid after a complete archive, so verify the physical mount before analysis. The reference Compose file refuses to create missing bind sources, but it cannot distinguish a healthy empty share from an existing mountpoint whose filesystem is offline.
+
+### Verification modes
+
+- `verify: checksum` runs `rclone check --download`. It reads the full contents of every compared file from both endpoints, so it is backend-independent but can generate substantial CIFS, network, and Drive I/O.
+- `verify: size` runs the size-only comparison. It checks paths and byte counts without reading file contents and therefore provides weaker assurance.
+
+The source-to-staging gate is bidirectional and exact for the complete directory unit: an extra or missing staging object blocks publication. A newly created destination receives the same exact bidirectional check. Only `merge-immutable` uses a source-to-destination one-way final check, allowing reviewed destination-only posters, subtitles, or previously archived files to remain.
 
 ## Quick start
 
@@ -103,7 +113,7 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 docker compose ps
 ```
 
-Open `http://127.0.0.1:8088`, enter the API token, and create a **dry-run copy** job first. The default source mount is `/sources/media` and is read-only.
+Open `http://127.0.0.1:8088`, enter the API token, and create a **dry-run copy** job first. The default source mount is `/sources/media` and is read-only. The NUE v0.1.0 rollout keeps `/data/storagebox/media` mounted read-only inside Atomic Sync and runs separate movie/TV dry-run jobs before any copy canary.
 
 ### Production image
 
@@ -122,7 +132,7 @@ The official image deliberately links only rclone's `local`, `drive`, and
 StorageBox/CIFS → Google Drive deployment while reducing the runtime attack
 surface. Build a reviewed custom image if another rclone backend is required.
 
-Each GitHub Release includes `image-digest.txt`, Linux binaries, and `SHA256SUMS`. The workflow makes the GHCR package public, verifies anonymous manifest access, attaches SBOM/provenance, and signs the immutable digest with GitHub OIDC. Verify a release before use:
+Each GitHub Release includes `image-digest.txt`, Linux binaries, and `SHA256SUMS`. The workflow requires the GHCR package to be public, fails closed if anonymous access is unavailable, checks per-platform SBOM/provenance and vulnerabilities, then signs and immediately verifies the immutable digest with GitHub OIDC. A first publication may require setting package visibility to Public in GitHub Packages and rerunning the failed workflow. Verify a release before use:
 
 ```bash
 IMAGE="$(cat image-digest.txt)"
@@ -141,17 +151,22 @@ sha256sum -c SHA256SUMS
 | `ATOMIC_DATA_DIR` | `/data` | SQLite and durable state directory |
 | `ATOMIC_API_TOKEN` | empty | Bearer token; if set it must be at least 32 characters, and non-loopback listeners require it |
 | `ATOMIC_RCLONE_BIN` | `rclone` | rclone executable path |
-| `ATOMIC_MAX_CONCURRENCY` | `4` | Global transfer worker ceiling |
+| `ATOMIC_MAX_CONCURRENCY` | `2` | Global concurrent rclone-process ceiling |
+| `ATOMIC_RCLONE_TRANSFERS` | `2` | Maximum parallel transfers inside each rclone process |
+| `ATOMIC_RCLONE_CHECKERS` | `2` | Maximum parallel checks inside each rclone process |
+| `ATOMIC_RCLONE_TPS_LIMIT` | `2` | Per-process backend transactions per second; burst is fixed at 1 |
 | `ATOMIC_LOG_FORMAT` | `json` | `json` or text structured logs |
 | `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | Explicit rclone configuration path |
 
-The application never writes `.env` or `rclone.conf`. Jobs, assignments, runs, and branch analyses are stored in `atomic-sync.db`.
+The application never writes `.env` or `rclone.conf`. Jobs, assignments, runs, and branch analyses are stored in `atomic-sync.db`. Local sources are restricted to `/sources/...`, local destinations to `/destinations/...`, and remote sources are rejected. Jobs always copy a complete directory unit; include/exclude filters are rejected in v0.1.0.
 
 ## Guarantees and boundaries
 
-Atomic Sync provides a staged, verified publication protocol. Object-storage directory operations are not ACID transactions, and a remote `moveto` may be implemented as multiple object operations. On failure, the source is preserved and staging remains available for diagnosis.
+Atomic Sync provides a staged, verified copy-publication protocol. Object-storage directory operations are not ACID transactions, and a destination-side `moveto` may be implemented as multiple object operations. The source is always retained by v0.1.0.
 
-`merge-immutable` is deliberately not fully atomic: it can add missing objects before a later conflict is discovered. It never overwrites a different destination object and never deletes the source until final verification succeeds.
+`merge-immutable` is deliberately not fully atomic: it can add missing objects before a later conflict is discovered. It never overwrites a different destination object. Its hidden staging copy is retained even after success as recovery and audit material; Atomic Sync never issues an automatic staging cleanup. For a new destination, promotion moves the destination-side staging directory into its final name, so there is no separate staging copy to clean.
+
+Source deletion is outside the v0.1.0 trust boundary. Stop Sonarr/Radarr importers and every other writer for the selected unit, independently verify the final destination, take or confirm a recovery copy, delete only that reviewed source directory with an external administrative tool, and rescan before resuming writes. See [Operations](docs/OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
 
 SQLite makes one Atomic Sync instance the supported topology. Do not run multiple replicas against the same database.
 
@@ -177,7 +192,7 @@ ATOMIC_API_TOKEN="$(openssl rand -hex 32)" docker compose config
 docker build -t atomic-sync:dev .
 ```
 
-The critical engine, API, model, store, and configuration packages are covered by unit and integration-style tests, including dry-run, fail-closed conflict, immutable merge, shutdown, authentication, and mergerfs branch-status scenarios.
+The critical engine, API, model, store, and configuration packages are covered by unit and integration-style tests, including copy-only enforcement, exact staging verification, fail-closed hierarchy/conflict handling, immutable merge, shutdown, authentication, and mergerfs branch-status scenarios.
 
 ## Roadmap
 

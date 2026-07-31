@@ -31,7 +31,7 @@
     <section class="hero" aria-labelledby="heroTitle">
       <div>
         <div class="eyebrow"><span></span><span data-i18n="eyebrow">CONTROL PLANE · SAFE BY DEFAULT</span></div>
-        <h1 id="heroTitle" data-i18n="heroTitle">Move complete media units, never loose fragments.</h1>
+        <h1 id="heroTitle" data-i18n="heroTitle">Publish complete media units, preserve every source.</h1>
         <p data-i18n="heroText">Stage, verify, publish, and recover every directory as one auditable operation.</p>
       </div>
       <div class="hero-mark" aria-hidden="true">
@@ -41,8 +41,8 @@
 
     <section class="safety-banner" aria-label="Safety status">
       <div class="safety-icon" aria-hidden="true">◇</div>
-      <div><strong data-i18n="safetyTitle">Protected launch mode</strong><p data-i18n="safetyText">New jobs start as dry runs. Existing destinations fail closed unless immutable merge is explicitly selected.</p></div>
-      <span class="safety-pill" data-i18n="sourcePreserved">SOURCE PRESERVED</span>
+      <div><strong id="safetyTitle" data-i18n="safetyTitle">Protected launch mode</strong><p id="safetyText" data-i18n="safetyText">New jobs start as dry runs. Existing destinations fail closed unless immutable merge is explicitly selected.</p></div>
+      <span class="safety-pill" id="safetyPill" data-i18n="sourcePreserved">SOURCE PRESERVED</span>
     </section>
 
     <section class="metrics" id="stats" aria-label="Dashboard metrics">
@@ -76,13 +76,13 @@
       <input type="hidden" name="id">
       <div class="form-grid">
         <label class="field span-2"><span data-i18n="jobName">Job name</span><input name="name" required maxlength="128" autocomplete="off" placeholder="Archive stable movies"></label>
-        <label class="field span-2"><span data-i18n="source">Source</span><input name="source" required autocomplete="off" placeholder="/sources/storagebox/movies"><small data-i18n="sourceHint">Use a mounted absolute path or an rclone remote path.</small></label>
+        <label class="field span-2"><span data-i18n="source">Source</span><input name="source" required autocomplete="off" placeholder="/sources/storagebox/movies"><small data-i18n="sourceHint">Use a read-only absolute path below /sources.</small></label>
         <label class="field"><span data-i18n="destinationName">Destination ID</span><input name="destinationName" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" value="gd-primary"></label>
         <label class="field"><span data-i18n="destinationPath">Destination path</span><input name="destinationPath" required autocomplete="off" placeholder="GD:data/media/movies"></label>
-        <label class="field"><span data-i18n="mode">Mode</span><select name="mode"><option value="copy" data-i18n="copyMode">Copy · preserve source</option><option value="move" data-i18n="moveMode">Move · delete only after final verification</option></select></label>
+        <label class="field"><span data-i18n="mode">Mode</span><select name="mode"><option value="copy" data-i18n="copyMode">Verified copy · source always preserved</option></select></label>
         <label class="field"><span data-i18n="grouping">Atomic unit</span><select name="grouping"><option value="folder" data-i18n="folderUnit">Top-level folder</option><option value="show" data-i18n="showUnit">Complete show</option><option value="season" data-i18n="seasonUnit">Season</option><option value="depth" data-i18n="depthUnit">Path depth</option></select></label>
         <label class="field"><span data-i18n="conflictPolicy">Existing destination</span><select name="conflictPolicy"><option value="fail" data-i18n="failClosed">Fail closed (recommended)</option><option value="merge-immutable" data-i18n="immutableMerge">Immutable merge · never overwrite</option></select></label>
-        <label class="field"><span data-i18n="verify">Verification</span><select name="verify"><option value="checksum" data-i18n="checksum">Checksum</option><option value="size" data-i18n="sizeOnly">Size only</option></select></label>
+        <label class="field"><span data-i18n="verify">Verification</span><select name="verify"><option value="checksum" data-i18n="checksum">Full content · downloads both sides</option><option value="size" data-i18n="sizeOnly">Size only · metadata</option></select></label>
         <label class="field"><span data-i18n="settleSeconds">Stable window (seconds)</span><input name="settleSeconds" type="number" min="0" max="315360000" value="2592000"></label>
         <label class="field"><span data-i18n="concurrency">Concurrency</span><input name="concurrency" type="number" min="1" max="8" value="2"></label>
         <label class="field"><span data-i18n="depth">Depth</span><input name="depth" type="number" min="1" max="32" value="1"></label>
@@ -116,12 +116,24 @@
     </form>
   </dialog>
 
-  <dialog id="analysisDialog" class="dialog wide-dialog analysis-dialog">
+  <dialog id="analysisDialog" class="dialog wide-dialog analysis-dialog" aria-labelledby="analysisTitle" aria-describedby="analysisNote">
     <div class="analysis-content">
-      <div class="dialog-head"><div><span class="section-kicker" data-i18n="branchAnalysis">BRANCH ANALYSIS</span><h2 id="analysisTitle" data-i18n="archiveStatus">Archive status</h2></div><button class="close-button" type="button" data-close="analysisDialog" aria-label="Close">×</button></div>
-      <p class="analysis-note" data-i18n="analysisNote">Metadata coverage is a planning signal. Source deletion still requires a final checksum or size check.</p>
+      <div class="dialog-head"><div><span class="section-kicker" data-i18n="branchAnalysis">PHYSICAL BRANCH ANALYSIS</span><h2 id="analysisTitle" data-i18n="archiveStatus">Archive status</h2></div><button class="close-button" type="button" data-close="analysisDialog" aria-label="Close">×</button></div>
+      <p class="analysis-note" id="analysisNote" data-i18n="analysisNote">A mergerfs folder name is not archive evidence. This read-only snapshot compares relative file paths and sizes on the mounted physical source and its assigned physical destination. Cleanup still requires final verification.</p>
       <p class="analysis-context" id="analysisContext"></p>
-      <div class="analysis-summary" id="analysisSummary"></div>
+      <div class="analysis-summary" id="analysisSummary" aria-labelledby="analysisTitle"></div>
+      <details class="analysis-guide">
+        <summary data-i18n="statusGuide">How the states are determined</summary>
+        <p data-i18n="mergerfsGuide">The merged view is a union: same-named folders can be empty, complete, or split across branches. These states use physical-branch file contents, not folder names.</p>
+        <ul>
+          <li><span class="analysis-status conflict" data-i18n="analysis_conflict">conflict</span><span data-i18n="meaning_conflict">A shared path has a different size, one branch has a file where the other has a directory, or content appears outside its assigned destination branch. Manual review is required.</span></li>
+          <li><span class="analysis-status partial" data-i18n="analysis_partial">partially archived</span><span data-i18n="meaning_partial">The destination contains unit content, but one or more source paths are missing there. The two branches may be fully disjoint or partly scattered; do not clean the source.</span></li>
+          <li><span class="analysis-status pending" data-i18n="analysis_pending">not started</span><span data-i18n="meaning_pending">The physical source contains files and the assigned destination contains none. Archiving has not started for this unit.</span></li>
+          <li><span class="analysis-status ready-to-verify" data-i18n="analysis_ready_to_verify">ready to verify</span><span data-i18n="meaning_ready_to_verify">Every source file path exists at the destination with the same size, but source files remain. Run final checksum or size verification before cleanup.</span></li>
+          <li><span class="analysis-status archived" data-i18n="analysis_archived">archived</span><span data-i18n="meaning_archived">The destination contains files and the physical source contains none. An empty source directory shell may remain; mount health must still be confirmed.</span></li>
+          <li><span class="analysis-status empty" data-i18n="analysis_empty">empty</span><span data-i18n="meaning_empty">Neither physical branch contains files for this unit. One or both directory shells may still exist.</span></li>
+        </ul>
+      </details>
       <div class="analysis-units" id="analysisUnits"></div>
     </div>
   </dialog>

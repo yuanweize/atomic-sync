@@ -120,9 +120,10 @@ jobs:
           test "$(docker exec atomic-sync-ci id -u)" = 1000
           test "$(docker exec atomic-sync-ci awk '/CapEff/ {print $2}' /proc/1/status)" = 0000000000000000
           test "$(docker exec atomic-sync-ci /usr/local/bin/rclone version | sed -n '1p')" = "rclone 1.74.4"
-          for command in check copy lsf lsjson moveto purge; do
+          for command in check copy lsf lsjson moveto; do
             docker exec atomic-sync-ci /usr/local/bin/rclone "$command" --help >/dev/null
           done
+          ! docker exec atomic-sync-ci /usr/local/bin/rclone purge --help >/dev/null 2>&1
           test "$(docker exec atomic-sync-ci /usr/local/bin/rclone help backends | grep -Ec '^  (local|crypt|drive) +')" = 3
 
       - name: Scan image for vulnerabilities

@@ -58,12 +58,20 @@ func validAPIJob(id string) model.Job {
 }
 
 func perform(handler http.Handler, method, target, token string, body io.Reader) *httptest.ResponseRecorder {
+	authorization := ""
+	if token != "" {
+		authorization = "Bearer " + token
+	}
+	return performWithAuthorization(handler, method, target, authorization, body)
+}
+
+func performWithAuthorization(handler http.Handler, method, target, authorization string, body io.Reader) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, target, body)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
+	if authorization != "" {
+		request.Header.Set("Authorization", authorization)
 	}
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -97,6 +105,19 @@ func TestProtectedAPIRequiresBearerToken(t *testing.T) {
 		response := perform(harness.handler, http.MethodGet, "/api/jobs", token, nil)
 		if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") == "" {
 			t.Fatalf("token %q returned %d", token, response.Code)
+		}
+	}
+	for _, authorization := range []string{
+		"secret-token",
+		"Basic secret-token",
+		"bearer secret-token",
+		"Bearer",
+		"Bearer  secret-token",
+		"Bearer secret-token extra",
+	} {
+		response := performWithAuthorization(harness.handler, http.MethodGet, "/api/jobs", authorization, nil)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") == "" {
+			t.Fatalf("authorization %q returned %d", authorization, response.Code)
 		}
 	}
 	response := perform(harness.handler, http.MethodGet, "/api/jobs", "secret-token", nil)
@@ -154,6 +175,55 @@ func TestCreateRejectsUnknownFieldsAndMultipleDocuments(t *testing.T) {
 	}
 }
 
+func TestCreateAndUpdateRejectCrossJobPathOverlap(t *testing.T) {
+	harness := newHarness(t, "token")
+	existing := validAPIJob("job_movies")
+	existing.Name = "Movies"
+	existing.Source = "/sources/media/movies"
+	existing.Destinations[0].Path = "GD:data/media/movies"
+	if err := harness.store.SaveJob(context.Background(), existing); err != nil {
+		t.Fatal(err)
+	}
+
+	nested := validAPIJob("")
+	nested.Name = "Nested"
+	nested.Source = "/sources/media/movies/new"
+	nested.Destinations[0].Path = "GD:data/media/new"
+	payload, _ := json.Marshal(nested)
+	response := perform(harness.handler, http.MethodPost, "/api/jobs", "token", bytes.NewReader(payload))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "overlap") {
+		t.Fatalf("overlapping create returned %d: %s", response.Code, response.Body.String())
+	}
+
+	tv := validAPIJob("job_tv")
+	tv.Name = "TV"
+	tv.Source = "/sources/media/tvseries"
+	tv.Destinations[0].Path = "GD:data/media/tvseries"
+	if err := harness.store.SaveJob(context.Background(), tv); err != nil {
+		t.Fatal(err)
+	}
+	tv.Destinations[0].Path = "GD:data/media/movies/archive"
+	payload, _ = json.Marshal(tv)
+	response = perform(harness.handler, http.MethodPut, "/api/jobs/"+tv.ID, "token", bytes.NewReader(payload))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "overlap") {
+		t.Fatalf("overlapping update returned %d: %s", response.Code, response.Body.String())
+	}
+
+	legacy := validAPIJob("job_legacy")
+	legacy.Name = "Legacy overlap"
+	legacy.Source = "/sources/media/movies/legacy"
+	legacy.Destinations[0].Path = "GD:data/media/legacy"
+	if err := harness.store.SaveJob(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"/api/jobs/job_legacy/run", "/api/jobs/job_legacy/analysis"} {
+		response = perform(harness.handler, http.MethodPost, target, "token", nil)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "overlap") {
+			t.Fatalf("legacy overlapping job %s returned %d: %s", target, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestPausedJobCannotRun(t *testing.T) {
 	harness := newHarness(t, "token")
 	job := model.Job{
@@ -168,6 +238,21 @@ func TestPausedJobCannotRun(t *testing.T) {
 	response := perform(harness.handler, http.MethodPost, "/api/jobs/job_paused/run", "token", nil)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "paused") {
 		t.Fatalf("paused run returned %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestLegacyDestructiveJobReturnsBadRequest(t *testing.T) {
+	harness := newHarness(t, "token")
+	job := validAPIJob("job_legacy_move")
+	job.Mode = "move"
+	if err := harness.store.SaveJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"/api/jobs/job_legacy_move/run", "/api/jobs/job_legacy_move/analysis"} {
+		response := perform(harness.handler, http.MethodPost, target, "token", nil)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "mode must be copy") {
+			t.Fatalf("legacy destructive job %s returned %d: %s", target, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -239,5 +324,9 @@ func TestRunningJobCannotBeUpdated(t *testing.T) {
 	response := perform(harness.handler, http.MethodPut, "/api/jobs/"+job.ID, "token", bytes.NewReader(payload))
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "running") {
 		t.Fatalf("running update returned %d: %s", response.Code, response.Body.String())
+	}
+	response = perform(harness.handler, http.MethodDelete, "/api/jobs/"+job.ID, "token", nil)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "running") {
+		t.Fatalf("running delete returned %d: %s", response.Code, response.Body.String())
 	}
 }

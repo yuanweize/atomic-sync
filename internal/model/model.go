@@ -62,8 +62,8 @@ type Run struct {
 }
 
 // Analysis is a metadata-first comparison of the physical source and
-// destination branches. Matching size is useful for planning, but destructive
-// cleanup still requires Runner's final rclone check.
+// destination branches. Matching size is useful for planning, but it is not
+// proof that two files have identical contents.
 type Analysis struct {
 	JobID      string         `json:"jobId"`
 	State      string         `json:"state"`
@@ -75,22 +75,28 @@ type Analysis struct {
 }
 
 type UnitAnalysis struct {
-	Unit               string   `json:"unit"`
-	Destination        string   `json:"destination"`
-	Status             string   `json:"status"`
-	Coverage           int      `json:"coverage"`
-	SourcePresent      bool     `json:"sourcePresent"`
-	DestinationPresent bool     `json:"destinationPresent"`
-	SourceFiles        int      `json:"sourceFiles"`
-	DestinationFiles   int      `json:"destinationFiles"`
-	MatchingFiles      int      `json:"matchingFiles"`
-	MissingFiles       int      `json:"missingFiles"`
-	ConflictingFiles   int      `json:"conflictingFiles"`
-	SourceBytes        int64    `json:"sourceBytes"`
-	DestinationBytes   int64    `json:"destinationBytes"`
-	MatchingBytes      int64    `json:"matchingBytes"`
-	MissingSamples     []string `json:"missingSamples,omitempty"`
-	ConflictSamples    []string `json:"conflictSamples,omitempty"`
+	Unit                       string   `json:"unit"`
+	Destination                string   `json:"destination"`
+	Status                     string   `json:"status"`
+	Coverage                   int      `json:"coverage"`
+	SourcePresent              bool     `json:"sourcePresent"`
+	DestinationPresent         bool     `json:"destinationPresent"`
+	SourceFiles                int      `json:"sourceFiles"`
+	DestinationFiles           int      `json:"destinationFiles"`
+	DestinationOnlyFiles       int      `json:"destinationOnlyFiles"`
+	MatchingFiles              int      `json:"matchingFiles"`
+	MissingFiles               int      `json:"missingFiles"`
+	ConflictingFiles           int      `json:"conflictingFiles"`
+	SourceBytes                int64    `json:"sourceBytes"`
+	DestinationBytes           int64    `json:"destinationBytes"`
+	DestinationOnlyBytes       int64    `json:"destinationOnlyBytes"`
+	MatchingBytes              int64    `json:"matchingBytes"`
+	UnexpectedDestinationFiles int      `json:"unexpectedDestinationFiles"`
+	UnexpectedDestinationBytes int64    `json:"unexpectedDestinationBytes"`
+	UnexpectedDestinations     []string `json:"unexpectedDestinations,omitempty"`
+	MissingSamples             []string `json:"missingSamples,omitempty"`
+	DestinationOnlySamples     []string `json:"destinationOnlySamples,omitempty"`
+	ConflictSamples            []string `json:"conflictSamples,omitempty"`
 }
 
 var transitions = map[string]map[string]bool{
@@ -143,6 +149,30 @@ func (j Job) SamePlacement(other Job) bool {
 	return true
 }
 
+// PlacementOverlaps reports whether two jobs can address any equal or nested
+// physical path. Rejecting these configurations prevents independent workers
+// from analyzing, publishing, or deleting inside one another's units.
+func (j Job) PlacementOverlaps(other Job) bool {
+	left := make([]string, 1, len(j.Destinations)+1)
+	left[0] = j.Source
+	for _, destination := range j.Destinations {
+		left = append(left, destination.Path)
+	}
+	right := make([]string, 1, len(other.Destinations)+1)
+	right[0] = other.Source
+	for _, destination := range other.Destinations {
+		right = append(right, destination.Path)
+	}
+	for _, a := range left {
+		for _, b := range right {
+			if overlappingEndpoint(a, b) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (j Job) Validate() error {
 	if j.ID != "" && !identifierPattern.MatchString(j.ID) {
 		return invalid("id must contain only letters, numbers, dot, underscore, or dash")
@@ -150,8 +180,8 @@ func (j Job) Validate() error {
 	if j.Name == "" || len(j.Name) > 128 {
 		return invalid("name is required and must be at most 128 characters")
 	}
-	if !validEndpoint(j.Source) {
-		return invalid("source must be a non-root local path or rclone remote path")
+	if !validSourceEndpoint(j.Source) {
+		return invalid("source must be an absolute path below /sources")
 	}
 	if err := j.validateExecutionOptions(); err != nil {
 		return err
@@ -166,8 +196,8 @@ func (j Job) validateExecutionOptions() error {
 	if len(j.Destinations) == 0 || len(j.Destinations) > 16 {
 		return invalid("between 1 and 16 destinations are required")
 	}
-	if j.Mode != "copy" && j.Mode != "move" {
-		return invalid("mode must be copy or move")
+	if j.Mode != "copy" {
+		return invalid("mode must be copy; automatic source deletion is not supported")
 	}
 	if j.Grouping != "folder" && j.Grouping != "show" && j.Grouping != "season" && j.Grouping != "depth" {
 		return invalid("grouping must be folder, show, season, or depth")
@@ -190,11 +220,8 @@ func (j Job) validateExecutionOptions() error {
 	if j.ConflictPolicy != ConflictFail && j.ConflictPolicy != ConflictMergeImmutable {
 		return invalid("conflictPolicy must be fail or merge-immutable")
 	}
-	if j.DeleteSource && j.Mode != "move" {
-		return invalid("deleteSource is only valid in move mode")
-	}
-	if j.Mode == "move" && (len(j.Include) > 0 || len(j.Exclude) > 0) {
-		return invalid("move mode cannot use include or exclude filters because source cleanup is unit-wide")
+	if j.DeleteSource {
+		return invalid("deleteSource is not supported; source data is always preserved")
 	}
 	return nil
 }
@@ -210,8 +237,8 @@ func (j Job) validateDestinations() error {
 			return invalid("destination names must be unique")
 		}
 		names[d.Name] = struct{}{}
-		if !validEndpoint(d.Path) {
-			return invalid("destination paths must be non-root local or rclone paths")
+		if !validDestinationEndpoint(d.Path) {
+			return invalid("destination paths must be rclone paths or absolute paths below /destinations")
 		}
 		if overlappingEndpoint(j.Source, d.Path) {
 			return invalid("source and destination must not overlap")
@@ -230,18 +257,21 @@ func (j Job) validateDestinations() error {
 }
 
 func (j Job) validateFilters() error {
-	if len(j.Include) > 100 || len(j.Exclude) > 100 {
-		return invalid("too many include or exclude rules")
-	}
-	for _, rule := range append(append([]string{}, j.Include...), j.Exclude...) {
-		if rule == "" || len(rule) > 512 || strings.ContainsAny(rule, "\x00\r\n") {
-			return invalid("filter rules must be non-empty single-line patterns")
-		}
+	if len(j.Include) > 0 || len(j.Exclude) > 0 {
+		return invalid("include and exclude filters are not supported; each directory unit is copied in full")
 	}
 	return nil
 }
 
-func validEndpoint(value string) bool {
+func validSourceEndpoint(value string) bool {
+	return validLocalEndpointBelow(value, "/sources")
+}
+
+func validDestinationEndpoint(value string) bool {
+	return validRemoteEndpoint(value) || validLocalEndpointBelow(value, "/destinations")
+}
+
+func validRemoteEndpoint(value string) bool {
 	if value == "" || len(value) > 1024 || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "\x00\r\n") {
 		return false
 	}
@@ -249,8 +279,15 @@ func validEndpoint(value string) bool {
 		remotePath := strings.Trim(value[i+1:], "/")
 		return identifierPattern.MatchString(value[:i]) && remotePath != "" && remotePath != "." && !strings.HasPrefix(path.Clean(remotePath), "../")
 	}
-	clean := path.Clean(strings.ReplaceAll(value, `\\`, "/"))
-	return strings.HasPrefix(clean, "/") && clean != "/"
+	return false
+}
+
+func validLocalEndpointBelow(value, root string) bool {
+	if value == "" || len(value) > 1024 || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "\\\x00\r\n") {
+		return false
+	}
+	clean := path.Clean(value)
+	return strings.HasPrefix(clean, root+"/")
 }
 
 func overlappingEndpoint(a, b string) bool {
@@ -272,6 +309,8 @@ func overlappingEndpoint(a, b string) bool {
 type validationError string
 
 func (e validationError) Error() string { return string(e) }
+
+func (e validationError) Is(target error) bool { return target == ErrInvalidJob }
 
 func invalid(reason string) error {
 	return validationError(fmt.Sprintf("invalid job configuration: %s", reason))

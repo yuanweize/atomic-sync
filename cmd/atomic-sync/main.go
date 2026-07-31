@@ -55,7 +55,10 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	runner := engine.New(db, cfg.RcloneBin, cfg.MaxConcurrency)
+	runner := engine.NewWithLimits(
+		db, cfg.RcloneBin, cfg.MaxConcurrency,
+		cfg.RcloneTransfers, cfg.RcloneCheckers, cfg.RcloneTPSLimit,
+	)
 	srv := &http.Server{
 		Addr: cfg.Listen, Handler: api.New(db, runner, cfg.APIToken).Handler(),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
