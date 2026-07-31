@@ -93,14 +93,14 @@ jobs:
               ' >/dev/null
           docker buildx imagetools inspect --format '{{ json .Provenance }}' "$reference" \
             | jq -e '
-                ((."linux/amd64".SLSA.buildType | type) == "string") and
-                ((."linux/amd64".SLSA.buildType | length) > 0) and
-                ((."linux/amd64".SLSA.builder.id | type) == "string") and
-                ((."linux/amd64".SLSA.builder.id | length) > 0) and
-                ((."linux/arm64".SLSA.buildType | type) == "string") and
-                ((."linux/arm64".SLSA.buildType | length) > 0) and
-                ((."linux/arm64".SLSA.builder.id | type) == "string") and
-                ((."linux/arm64".SLSA.builder.id | length) > 0)
+                ((."linux/amd64".SLSA.buildDefinition.buildType | type) == "string") and
+                ((."linux/amd64".SLSA.buildDefinition.buildType | length) > 0) and
+                ((."linux/amd64".SLSA.runDetails.builder.id | type) == "string") and
+                ((."linux/amd64".SLSA.runDetails.builder.id | length) > 0) and
+                ((."linux/arm64".SLSA.buildDefinition.buildType | type) == "string") and
+                ((."linux/arm64".SLSA.buildDefinition.buildType | length) > 0) and
+                ((."linux/arm64".SLSA.runDetails.builder.id | type) == "string") and
+                ((."linux/arm64".SLSA.runDetails.builder.id | length) > 0)
               ' >/dev/null
 
       - name: Scan candidate amd64 image
