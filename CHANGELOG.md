@@ -10,6 +10,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 - Mount only the dedicated rclone config directory read-write so OAuth token refresh can persist via atomic rename while the container root and media source remain read-only.
 - Replace the Compose interpolation variable `RCLONE_CONFIG_PATH` with `RCLONE_CONFIG_DIR`; deployments with a custom config location must migrate it to the dedicated directory path.
+- Keep a stable login-form reference across asynchronous authentication, with disabled/loading feedback and recoverable focus on rejected tokens.
 
 ## [0.1.2] - 2026-07-31
 

@@ -665,20 +665,38 @@ async function startRun(event) {
 
 async function authenticate(event) {
   event.preventDefault();
-  const token = event.currentTarget.elements.token.value.trim();
+  const form = event.currentTarget;
+  const submitButton = form.querySelector('button[type="submit"]');
+  const token = form.elements.token.value.trim();
+  let authenticated = false;
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.setAttribute("aria-busy", "true");
+    submitButton.textContent = t("connecting");
+  }
   state.token = token;
   sessionStorage.setItem("atomic-token", token);
   try {
     await request("system");
+    authenticated = true;
     byId("authDialog").close();
-    event.currentTarget.reset();
+    form.reset();
     toast(t("tokenAccepted"), "success");
     await loadDashboard();
     connectEvents();
   } catch (error) {
-    state.token = "";
-    sessionStorage.removeItem("atomic-token");
+    if (!authenticated) {
+      state.token = "";
+      sessionStorage.removeItem("atomic-token");
+      form.elements.token.focus();
+    }
     handleError(error);
+  } finally {
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.removeAttribute("aria-busy");
+      submitButton.textContent = t("unlock");
+    }
   }
 }
 
