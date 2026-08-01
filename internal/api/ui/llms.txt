@@ -1,0 +1,5 @@
+# Atomic Sync
+
+Atomic Sync is a private, authenticated control plane for auditable rclone copy and move jobs. It does not provide bidirectional synchronization.
+
+- [Project documentation](https://github.com/yuanweize/Atomic-Sync)

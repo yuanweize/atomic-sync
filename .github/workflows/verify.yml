@@ -40,7 +40,9 @@ jobs:
         run: go tool cover -func=coverage.out | awk '/total:/ { gsub("%", "", $3); if ($3 + 0 < 65) { print "coverage " $3 "% is below 65%"; exit 1 } }'
 
       - name: Check frontend syntax
-        run: node --check internal/api/ui/app.js
+        run: |
+          node --check internal/api/ui/app.js
+          node --input-type=module --eval 'import { readFileSync } from "node:fs"; const html = readFileSync("internal/api/ui/index.html", "utf8"); const patterns = [...html.matchAll(/\bpattern="([^"]+)"/g)].map((match) => match[1]); if (patterns.length === 0) throw new Error("no HTML patterns found"); for (const pattern of patterns) new RegExp(`^(?:${pattern})$`, "v");'
 
       - name: Validate Compose models
         env:
@@ -74,6 +76,21 @@ jobs:
         run: |
           docker build --check .
           docker build --tag atomic-sync:test --build-arg VERSION=ci --build-arg COMMIT=${{ github.sha }} .
+
+      - name: Test exact image rclone semantics
+        run: |
+          set -Eeuo pipefail
+          rclone_dir="$(mktemp -d)"
+          container="$(docker create atomic-sync:test)"
+          cleanup() {
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            rm -rf "$rclone_dir"
+          }
+          trap cleanup EXIT
+          docker cp "$container:/usr/local/bin/rclone" "$rclone_dir/rclone"
+          chmod 0755 "$rclone_dir/rclone"
+          test "$("$rclone_dir/rclone" version | sed -n '1p')" = "rclone 1.75.0"
+          ATOMIC_TEST_RCLONE_BIN="$rclone_dir/rclone" go test -count=1 ./internal/engine -run '^TestLocalRcloneDryRunAndMoveSemantics$'
 
       - name: Verify rclone token-refresh boundary
         run: |
@@ -169,11 +186,13 @@ jobs:
           test "$(docker inspect --format '{{.State.Health.Status}}' atomic-sync-ci)" = healthy
           test "$(docker exec atomic-sync-ci id -u)" = 1000
           test "$(docker exec atomic-sync-ci awk '/CapEff/ {print $2}' /proc/1/status)" = 0000000000000000
-          test "$(docker exec atomic-sync-ci /usr/local/bin/rclone version | sed -n '1p')" = "rclone 1.74.4"
-          for command in check copy lsf lsjson moveto; do
+          test "$(docker exec atomic-sync-ci /usr/local/bin/rclone version | sed -n '1p')" = "rclone 1.75.0"
+          for command in check copy lsf lsjson move; do
             docker exec atomic-sync-ci /usr/local/bin/rclone "$command" --help >/dev/null
           done
-          ! docker exec atomic-sync-ci /usr/local/bin/rclone purge --help >/dev/null 2>&1
+          for command in sync moveto purge; do
+            ! docker exec atomic-sync-ci /usr/local/bin/rclone "$command" --help >/dev/null 2>&1
+          done
           test "$(docker exec atomic-sync-ci /usr/local/bin/rclone help backends | grep -Ec '^  (local|crypt|drive) +')" = 3
 
       - name: Scan image for vulnerabilities

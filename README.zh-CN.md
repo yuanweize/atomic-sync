@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/atomic-sync-wordmark.svg" width="560" alt="Atomic Sync">
 
-  <p><strong>基于 rclone、理解底层分支、默认安全失败的媒体归档编排器。</strong></p>
+  <p><strong>以完整目录为单位、由 rclone 全程执行的媒体归档控制面。</strong></p>
 
   <p>
     <a href="README.md">English</a> ·
@@ -13,163 +13,207 @@
 
 ---
 
-Atomic Sync 把一个电影目录、整部剧或一个季视为不可拆分的复制单元：先暂存、再校验、然后发布，并再次校验最终目标。**v0.1.x 仅支持复制**：程序绝不删除来源，API 与 Runner 都会拒绝 `mode: move` 和 `deleteSource: true`。
+Atomic Sync 面向本地或 CIFS 挂载来源到 Google Drive 的大规模媒体归档。它把一部电影、整部剧或一季识别成一个完整规划单元，等待整个单元稳定，固定目标分支，然后直接交给 rclone 完成数据传输。
 
-它还会检查 mergerfs 合并视图隐藏的真实情况：两个底层分支出现同名目录，**不代表归档已经完成**。程序会比较 StorageBox 与 GD 等物理分支中每个单元的相对文件路径和大小，区分已归档、待强校验、部分归档、待归档、冲突与空目录。
+它主要解决两个普通传输命令无法独立解决的问题：
 
-## 为什么普通移动命令会拆散剧集
+- 后加入的一集、字幕或海报应该重置整个目录的稳定时间，不能让同一部剧被按单文件年龄拆到不同存储；
+- mergerfs 合并视图中的同名目录，不代表两个物理分支已经完整归档，也可能是部分重叠、完全零散、冲突或空壳。
 
-`rclone move --min-age 30d` 按单个文件判断年龄。后加入的字幕、海报或剧集会留下，而旧视频先被移动，最终同一个媒体目录分散在两个位置。
+Atomic Sync 不替代 rclone，不代理文件内容，也不再实现一套 Google Drive 客户端。**rclone 是唯一数据面**；Atomic Sync 只负责策略、完整目录分组、目标分配、分支分析、运行历史和受保护的 Web 控制面。
 
-Atomic Sync 读取整个单元中最新文件的修改时间。稳定窗口为 30 天时，只有完整目录连续 30 天没有变化才进入候选队列。进入候选不代表允许删除；来源清理属于外部人工流程，必须先停止所有写入者。
+## 只有两种模式
 
-## 安全协议
+| 模式 | 数据操作 | 成功后的来源 | 目标侧额外文件 |
+|---|---|---|---|
+| `copy` | 直接复制到最终目标 | 保留 | 永不清理 |
+| `move` | 直接移动到最终目标 | 由 rclone 在成功传输后删除 | 永不清理 |
+
+项目不会提供第三个 `sync` 模式。rclone 的 `sync` 是**单向镜像**，可能删除目标侧独有文件，并不是双向同步；Atomic Sync 不需要这种目标清理语义。真正的双向同步属于另一类产品，Syncthing 也是独立实现，并不是基于 rclone。
+
+## 为什么必须以完整目录为单位
+
+`rclone move --min-age 30d` 按单个文件计算年龄。如果 40 天前已有海报，而最后一集昨天才下载完成，旧文件可能先被移动，最终同一部剧被拆散。
+
+Atomic Sync 检查完整单元中最新文件的修改时间：
+
+```text
+电影分组       → Movie/
+整剧分组       → Show/
+季分组         → Show/Season 01/
+自定义深度     → 严格 N 层目录
+```
+
+仓库默认稳定窗口是 **30 天**（`2,592,000` 秒）。三天（`259,200` 秒）只适合小范围 dry-run 或金丝雀测试，不是项目默认值。稳定窗口大于零时，同一个秒数也会作为 `--min-age <seconds>s` 传给 rclone，形成最后一道年龄保护。
 
 ```mermaid
 flowchart LR
-  A[发现稳定目录单元] --> B[校验固定层级]
-  B --> C[固定目标]
-  C --> D[复制到隐藏暂存区]
-  D --> E[暂存区双向精确校验]
-  E --> F{目标已存在?}
-  F -->|否| G[提升暂存目录]
-  F -->|默认策略| X[停止并保留来源与暂存]
-  F -->|不可变合并| H[只补缺失文件，绝不覆盖]
-  G --> I[确认最终目标包含全部来源]
-  H --> I
-  I --> J[完成，来源保留]
+  A[物理来源分支] --> B[发现完整目录单元]
+  B --> C[等待整个单元稳定]
+  C --> D[固定一个目标]
+  D --> E{模式}
+  E -->|copy| F[rclone copy 到最终路径]
+  E -->|move| G[rclone move 到最终路径]
+  F --> H{Dry run?}
+  G --> H
+  H -->|是| I[同一操作追加 --dry-run]
+  H -->|否| J[直接传输到最终路径]
+  I --> K[持久化运行历史]
+  J --> K
 ```
 
-- 新任务默认 `dry-run`。
-- v0.1.x 仅支持复制；API 与 Runner 拒绝移动模式和 `deleteSource`，官方镜像不包含 rclone 的 `purge` 命令。
-- 目标已存在时默认安全失败。
-- `merge-immutable` 只补缺失内容，不覆盖同路径不同文件。
-- 执行单元必须是固定分组深度上的目录；浅层文件、父子单元重叠会在发布前让整个运行安全失败。
-- 暂存区必须与完整来源目录单元双向完全一致；新建目标的最终校验也必须双向一致，只有 `merge-immutable` 使用单向最终校验以保留已审核的目标侧额外文件。
-- 目录目标归属写入 SQLite，重启与重试不会重新分流。
-- 不同任务不能配置相同或互相嵌套的来源/目标路径，避免并发任务交叉操作。
-- SIGTERM 会取消并等待任务；异常退出留下的非终态记录在重启时标记失败，暂存内容保留。
-- UI 支持英文/简体中文；API Token 只保存在当前浏览器标签页。
-- 容器使用 UID 1000、只读根文件系统、零 capabilities 和 `no-new-privileges`。
+## 面向高吞吐和可观测性
 
-## mergerfs 底层归档判断
+- **所有数据操作都由 rclone 完成。** 重试、限速、可恢复传输、检查和 Drive 行为都留在成熟的数据面。
+- **直接写最终路径。** 不会为了发布再上传一份目标暂存副本。
+- **绝不镜像删除目标。** 两种模式都不会调用 rclone `sync`。
+- **默认真实 dry-run。** 使用同一 rclone 操作追加 `--dry-run` 检查两端；来源和目标媒体对象不变，但 rclone 可能在专用配置目录刷新 OAuth Token。
+- **目录边界安全失败。** 浅层文件、路径穿越、父子单元重叠、端点重叠和保留内部路径都会阻止执行。
+- **不可变冲突策略。** 默认策略在目标单元已存在时停止；显式合并只补缺失文件，不覆盖不同的目标对象。
+- **固定目标分配。** 加权选择会写入 SQLite，重试不会把一个单元重新分流。
+- **多层并发上限。** 任务 worker、全局 rclone 进程、进程内 transfers/checkers 和服务商 TPS 分开控制。
+- **容器默认加固。** 固定 UID/GID 1000、只读根文件系统、零 capabilities 与 `no-new-privileges`。
 
-宏观状态不是按“有没有同名文件夹”判断，而是按内部文件清单判断：
+直接传输是明确的性能选择。跨服务商 move 不是 ACID 目录重命名：rclone 按对象传输并确认，进程中断时两个分支可能出现部分完成状态。rclone 启动前，Atomic Sync 会重新列出来源并要求它与发现指纹一致，再把已发现文件路径写入临时 `--files-from-raw` 清单；rclone 因而只处理这个固定集合，不会顺带传输复检后才到达的文件。操作结束即删除清单；它只是控制数据，不是 staging 或媒体副本。每次非 dry-run copy/move 后都会列出最终目标，要求发现指纹中的每个文件路径和大小存在；move 再检查来源残留。这不会进行第二份内容传输，还能减少重复来源遍历，但元数据闭环无法锁住写入者，也不能证明保留旧修改时间的等大小原地改写。生产 move 仍必须停止写入者。
 
-| 状态 | 含义 | 建议动作 |
+## mergerfs 底层归档状态
+
+mergerfs 可以把 StorageBox 和 GD 的文件合并成一个看似完整的目录。Atomic Sync 会分别列出物理分支，并按固定目标比较单元内的相对路径和大小。
+
+| 状态 | 物理含义 | 运维判断 |
 |---|---|---|
-| `archived`（已归档） | GD 有内容，来源已经没有文件（可残留空目录壳） | 确认挂载健康并保留审计记录 |
-| `ready-to-verify`（待强校验/清理） | 来源的相对路径和大小全部能在 GD 对应，但来源仍在 | 停止写入、独立完成最终校验，再按人工流程清理 |
-| `partial`（部分归档） | GD 中已有部分内容，但仍缺少来源文件 | 不可变合并或人工核对 |
-| `pending`（待归档） | 来源有文件，目标不存在该单元 | 归档候选 |
-| `conflict`（冲突） | 相同相对路径的大小/类型不同，或文件出现在非分配目标分支 | 立即停止，人工选择权威副本与分支 |
-| `empty`（空目录） | 只有空目录壳 | 检查或忽略 |
+| `archived`（已归档） | 目标有文件，来源没有文件 | 当前内容位于归档分支；先确认挂载健康 |
+| `ready-to-verify`（待校验） | 每个来源路径和大小都能在目标找到，但来源仍保留 | 看似重复，等待明确的校验决策 |
+| `partial`（部分归档） | 目标已有内容，但缺少一个或多个来源文件 | 传输未完成，或两个分支是互补零散内容 |
+| `pending`（待归档） | 来源有文件，目标单元没有文件 | 尚未归档 |
+| `conflict`（冲突） | 路径的大小/类型不同，或内容位于错误的分配目标 | 停止并选择权威分支 |
+| `empty`（空目录） | 两侧都没有文件，可能只剩空目录壳 | 信息状态；检查或忽略 |
 
-`partial` 也包括两个分支只有互补零散文件的情况：即使来源文件覆盖率为 0%，只要 GD 已有该电影或剧集的其他文件，宏观上仍属于部分归档。目标侧只有一个空目录壳时仍是 `pending`，不能算部分归档或已归档。
+同名文件夹绝不是完成证明。例如 StorageBox 只有 `main.mkv`，GD 只有 `poster.jpg`，即使两侧都存在电影目录、GD 对来源文件覆盖率为 0%，宏观状态仍然是 `partial`。GD 只有空目录时仍是 `pending`。
 
-控制台分析只读取路径和大小，避免为了画面扫描就读取数 TB 的 CIFS 文件；任何外部人工来源删除仍需要真正的最终校验。完整规则见 [归档分析说明](docs/ARCHIVE-ANALYSIS.md)。
-
-`archived` 是根据当前物理分支清单推断的状态，不是某次成功运行的历史证明。全部归档完成后，来源成功返回空清单是合法状态，所以分析前必须先确认物理挂载健康。参考 Compose 会拒绝自动创建缺失的 bind 来源，但无法区分“健康的空共享”和“目录仍在、底层文件系统已离线”。
-
-### 校验模式
-
-- `verify: checksum` 执行 `rclone check --download`。它会读取双方每个待比较文件的完整内容，不依赖后端是否提供兼容哈希，但会产生显著的 CIFS、网络与 Drive I/O。
-- `verify: size` 使用仅大小比较，只核对路径与字节数，不读取文件内容，因此保证更弱。
-
-来源到暂存的闸门会对完整目录单元做双向精确校验：暂存区多一个或少一个对象都会阻止发布。新建目标的最终闸门也必须双向精确匹配；只有 `merge-immutable` 使用单向最终校验，允许保留已审核的海报、字幕或早期归档文件。
+控制台分析只读取路径和大小，避免刷新页面就读取数 TB 的 CIFS 内容。它是运维清单，不是内容完整性证明。完整规则见[底层分支归档分析](docs/ARCHIVE-ANALYSIS.md)。
 
 ## 快速开始
 
-需要 Docker Engine、Compose v2 和现有 `rclone.conf`。
+需要 Docker Engine、Compose v2，以及已配置目标 remote 的 `rclone.conf`。
 
 ```bash
-git clone https://github.com/yuanweize/atomic-sync.git
+git clone https://github.com/yuanweize/Atomic-Sync.git
 cd atomic-sync
 mkdir -p data rclone source
 cp /path/to/rclone.conf rclone/rclone.conf
 cp .env.example .env
+```
+
+生成至少 32 字符的 API Token 并写入 `.env`：
+
+```bash
 openssl rand -hex 32
 ```
 
-把生成的 Token 写入 `.env`，然后只处理 Atomic Sync 的专用目录权限。rclone 会通过“临时文件 + 原子重命名”刷新 OAuth token，因此专用 `rclone` 目录必须可写；**绝不要对共享媒体根目录递归 `chown`**。
+准备两个可写的专用目录。rclone 需要通过临时文件和原子重命名保存 OAuth 刷新结果，因此只能挂载 Atomic Sync 自己的配置目录，不能复用主机全局配置。
 
 ```bash
-sudo chown -R 1000:1000 data
-sudo chown -R 1000:1000 rclone
+sudo chown -R 1000:1000 data rclone
 sudo chmod 700 rclone
 sudo chmod 600 rclone/rclone.conf
-docker compose -f compose.yaml -f compose.dev.yaml up -d --build
-docker compose ps
+docker compose -f compose.yaml -f compose.dev.yaml up -d --build atomic-sync
+docker compose ps atomic-sync
 ```
 
-打开 `http://127.0.0.1:8088`，输入 API Token。第一次只创建“复制 + 仅演练”任务。默认来源挂载为容器内 `/sources/media`，并且是只读的。NUE 的 v0.1.x 首发会把 `/data/storagebox/media` 只读挂载到 Atomic Sync，并先分别运行电影、电视剧 dry-run 任务，再考虑单个复制 canary。
+打开 `http://127.0.0.1:8088`，输入 Token，先创建暂停的 dry-run 任务。参考 Compose 把 `/sources/media` 挂载为只读：它可以安全运行 `copy` 和任意模式的 dry-run；真正的 `move` 必须按[运维手册](docs/OPERATIONS.md)显式审核并更改来源挂载权限。
+
+### 最小安全任务
+
+```json
+{
+  "name": "Archive stable movies",
+  "source": "/sources/media/movies",
+  "destinations": [
+    {"name": "gd-primary", "path": "GD:media/movies", "weight": 1}
+  ],
+  "mode": "copy",
+  "deleteSource": false,
+  "grouping": "folder",
+  "settleSeconds": 2592000,
+  "concurrency": 1,
+  "verify": "size",
+  "conflictPolicy": "fail",
+  "dryRun": true,
+  "paused": true
+}
+```
+
+`copy` 必须配合 `deleteSource: false`；`move` 必须配合 `deleteSource: true`。两种模式都可以独立选择冲突策略和校验方式：首次运行优先使用 `fail`；`merge-immutable` 只补齐目标缺失对象且不覆盖目标；`size` 速度最快；当两端存在共同哈希时，`checksum` 能提供更强证据。所有 move 都使用 rclone 原生 `--ignore-existing`：目标同路径已存在时保留来源，并将单元报告为部分完成，绝不猜测内容相等后删除。由于 rclone 会跳过该重叠路径，`verify: checksum` 不会证明它的内容；清理前仍须独立内容校验。
+
+创建 move 演练任务时，只需把示例中的 `mode` 改为 `move` 并将 `deleteSource` 改为 `true`。真实 move 还需要在启动时输入完整任务名，并明确把来源挂载改为可写。
 
 ## 生产部署
 
-正式 Release 会生成带 SBOM、provenance 和 keyless 签名的 `linux/amd64`、`linux/arm64` 镜像。生产必须固定 Release digest：
+每个 Release 都会发布带 SBOM 和 provenance 的签名 `linux/amd64`、`linux/arm64` 镜像。生产环境同时固定版本与不可变 digest：
 
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.1.3@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.2.0@sha256:<release-digest>
 ```
 
-把服务嵌入其他 Compose 项目时不要使用 `build: .`，否则构建上下文会变成对方项目目录。
-
-官方镜像只链接 rclone 的 `local`、`drive`、`crypt` 后端以及 Atomic Sync
-实际调用的命令，覆盖 StorageBox/CIFS → Google Drive 场景，同时缩小运行时攻击面。
-如需其他 rclone 后端，应基于审核过的自定义镜像构建，而不是在生产中临时替换二进制。
-
-每个 GitHub Release 都包含 `image-digest.txt`、Linux 二进制文件和 `SHA256SUMS`。发布流程要求 GHCR 包已公开；匿名读取不可用时会安全失败。它逐平台检查 SBOM/provenance 和漏洞，再使用 GitHub OIDC 对不可变 digest 签名并回验。首次发布可能需要在 GitHub Packages 中手动设为 Public，然后重跑失败的工作流。部署前可这样验证：
+先校验完整 Compose 模型，再只重建共享栈中的 Atomic Sync：
 
 ```bash
-IMAGE="$(cat image-digest.txt)"
-docker pull "$IMAGE"
-cosign verify "$IMAGE" \
-  --certificate-identity-regexp '^https://github.com/yuanweize/atomic-sync/.github/workflows/release.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
-sha256sum -c SHA256SUMS
+docker compose config --quiet
+docker compose pull atomic-sync
+docker compose up -d --no-deps atomic-sync
 ```
 
-## 配置
+首次部署不要直接开启真实 move。依次检查底层分支、运行 dry-run、完成一个小型 copy 金丝雀；确认无误后，才停止所有写入者、只给最小来源目录写权限，并执行单单元 move 金丝雀。金丝雀必须把选定单元作为专用容器内父目录的唯一下一层，并把该父目录设为 `job.source`；具体作用域规则见[运维手册](docs/OPERATIONS.md#single-unit-canary-scope)。
 
-| 环境变量 | 默认值 | 用途 |
+从 v0.1 升级时，目标侧可能留有 `.atomic-sync-staging` 恢复数据。v0.2 不会创建、传输或删除该命名空间。任务校验会拒绝规范化路径中任一段恰好为 `.atomic-sync-staging` 的来源或目标端点；合法的父目标下仍可存在这个名称的遗留子目录，目标分析会忽略该子目录。任何显式人工清理前都必须先单独清点并独立校验这些遗留数据。
+
+官方镜像只包含参考部署需要的 rclone 后端：local（包括主机上已挂载的 CIFS/SMB）、Google Drive 和 crypt。程序不会在自定义 API、主机复制工具和 rclone 之间动态切换。需要其他 rclone 后端时，应单独构建并审核自定义镜像。
+
+## 校验与性能
+
+`verify: size` 映射为 rclone 的 `--size-only` 传输比较，不读取文件内容。它是最快的金丝雀选择，但无法发现等大小损坏。
+
+`verify: checksum` 映射为 rclone 的 `--checksum` 传输比较。存在双方兼容的哈希时由 rclone 进行比较；本地或 CIFS 挂载来源到 Google Drive 通常是读取来源计算 MD5、使用 Drive 已保存的哈希，而不是把两份文件都下载一遍。哈希可用性仍取决于后端。move 任务中的 `--ignore-existing` 会在 checksum 比较前跳过目标重叠路径，所以该设置不能证明保留重叠的内容。传输校验、重试和断点续传均由 rclone 负责。每次非 dry-run copy/move 后，Atomic Sync 只执行上述路径与大小完整性闸门；它不是第二次内容校验，也不是 `rclone check`。
+
+如需少量关键单元的深度审计，可在停止写入后由操作员独立运行 `rclone check --download`。它会读取两侧完整内容，故意不作为 Atomic Sync 的常规校验路径。
+
+吞吐量受四层配置控制：
+
+| 变量 | 默认值 | 作用域 |
 |---|---:|---|
-| `ATOMIC_LISTEN` | `127.0.0.1:8080` | HTTP 监听地址；容器会显式设置为 `:8080` |
-| `ATOMIC_DATA_DIR` | `/data` | SQLite 与持久化状态目录 |
-| `ATOMIC_API_TOKEN` | 空 | Bearer Token；设置后至少 32 个字符，非 loopback 监听必须配置 |
-| `ATOMIC_RCLONE_BIN` | `rclone` | rclone 可执行文件 |
-| `ATOMIC_MAX_CONCURRENCY` | `2` | 全局 rclone 进程并发上限 |
-| `ATOMIC_RCLONE_TRANSFERS` | `2` | 每个 rclone 进程内的并行传输上限 |
-| `ATOMIC_RCLONE_CHECKERS` | `2` | 每个 rclone 进程内的并行检查上限 |
-| `ATOMIC_RCLONE_TPS_LIMIT` | `2` | 每进程后端每秒事务上限，burst 固定为 1 |
-| `ATOMIC_LOG_FORMAT` | `json` | `json` 或文本结构化日志 |
-| `RCLONE_CONFIG` | `/config/rclone/rclone.conf` | 明确的 rclone 配置路径 |
-| `RCLONE_CONFIG_DIR` | `./rclone` | Compose 绑定专用可写配置目录时使用的宿主路径 |
+| `ATOMIC_MAX_CONCURRENCY` | `2` | 所有任务合计的并发 rclone 进程 |
+| `ATOMIC_RCLONE_TRANSFERS` | `2` | 每个进程内并行传输数 |
+| `ATOMIC_RCLONE_CHECKERS` | `2` | 每个进程内并行元数据/哈希检查数 |
+| `ATOMIC_RCLONE_TPS_LIMIT` | `2` | 每个进程每秒后端事务上限；`0` 表示不显式限制 |
 
-应用本身不会写入 `.env` 或编辑 rclone 配置，但子进程 rclone 可能在专用 `/config/rclone` 绑定目录中原子持久化刷新后的 OAuth token。该目录应设为 `0700`，`rclone.conf` 设为 `0600`；容器根文件系统和媒体来源挂载仍严格只读。任务、目标归属、运行历史与分支分析结果均保存在 `atomic-sync.db`。本地来源只能位于 `/sources/...`，本地目标只能位于 `/destinations/...`，远程来源会被拒绝。v0.1.x 必须复制完整目录单元，不接受 include/exclude 过滤器。
+配额敏感的 dry-run 金丝雀使用 `1/1/1/1`。追求 Drive 吞吐前，先配置独立的 Google OAuth `client_id` 和 `client_secret`；rclone 共享客户端不适合持续生产流量，并计划停止服务。之后监控 `403`/`429`、来源延迟和内存，逐步提高 transfers/checkers，尤其注意“进程并发 × 进程内传输数”的乘法效应。独立客户端经过压测确认还有余量后，可设置 `ATOMIC_RCLONE_TPS_LIMIT=0`，不再由 Atomic Sync 额外限制 TPS。Drive chunk size 属于 rclone/服务商配置，不是 Atomic Sync 自己的数据面实现。
 
-## 真实保证边界
+## 安全边界
 
-Atomic Sync 提供分阶段、可校验的复制发布协议。对象存储的目录操作不是真正的 ACID 事务，目标侧 `moveto` 可能由多个对象操作组成；v0.1.x 始终保留来源。
+- 参考/生产部署的受保护 API 要求 Bearer Token。只有显式绑定 loopback 的开发进程可以无 Token；非 loopback 监听会拒绝缺失或过短 Token。
+- 浏览器只把 Token 保存到当前标签页的 `sessionStorage`，不会写入 URL 或持久化 local storage。
+- 程序通过参数数组启动 rclone，不经过 shell 拼接。
+- 本地来源只能位于 `/sources`；本地目标只能位于 `/destinations`；远程来源会被拒绝。
+- 不同任务的相同或嵌套路径会被拒绝；第一次目标分配后，影响放置的字段会被锁定。
+- API Token 等同于挂载的 rclone 配置中所有目标 remote 的管理权限。
+- 真正的 `move` 具有删除性。容器写权限、任务配置、显式确认和停止写入者是互相独立的运维责任。
 
-`merge-immutable` 也不是完全原子的：发现后续冲突前，部分缺失对象可能已经补到目标；但它不会覆盖不同的目标对象。即使运行成功，隐藏暂存副本也会作为恢复与审计材料保留，Atomic Sync 不会自动清理它。新目标的提升操作会把目标侧暂存目录移动为最终目录，因此不会留下单独的暂存副本。
-
-来源删除不属于 v0.1.x 的信任边界。必须先停止 Sonarr/Radarr 导入器及该单元的所有其他写入者，独立校验最终目标，确认恢复副本，只用外部管理工具删除经过审核的那一个来源目录，重新扫描后再恢复写入。详见[运维文档中的人工来源清理流程](docs/OPERATIONS.md#manual-source-cleanup-outside-atomic-sync)。
-
-SQLite 架构只支持一个 Atomic Sync 实例，不要让多个副本共享同一个数据库。
+SQLite 只支持一个 Atomic Sync 进程，不能让多个副本同时使用同一个数据库。
 
 ## 文档
 
-- [架构与状态机](docs/ARCHITECTURE.md)
-- [mergerfs 分支归档分析](docs/ARCHIVE-ANALYSIS.md)
-- [生产运维、升级与回滚](docs/OPERATIONS.md)
+- [架构与执行模型](docs/ARCHITECTURE.md)
+- [底层分支归档分析](docs/ARCHIVE-ANALYSIS.md)
+- [生产运维、恢复与回滚](docs/OPERATIONS.md)
 - [HTTP API](docs/API.md)
 - [威胁模型](docs/SECURITY-MODEL.md)
 - [贡献指南](CONTRIBUTING.md)
 - [安全策略](SECURITY.md)
 
-## 开发验证
+## 开发
 
 需要 Go 1.25 或更高版本。
 
@@ -177,18 +221,8 @@ SQLite 架构只支持一个 Atomic Sync 实例，不要让多个副本共享同
 gofmt -w .
 go vet ./...
 go test -race -cover ./...
-ATOMIC_API_TOKEN="$(openssl rand -hex 32)" docker compose config
+ATOMIC_API_TOKEN="$(openssl rand -hex 32)" docker compose config --quiet
 docker build -t atomic-sync:dev .
 ```
 
-测试覆盖仅复制约束、暂存区精确校验、层级/冲突安全失败、不可变合并、关机恢复、鉴权、API、SQLite，以及 mergerfs 同名目录内部文件部分归档的判断。
-
-## 路线图
-
-- 定时轮询与文件系统监听适配器
-- 对选定分析单元按需计算校验和
-- 暂存内容续传与引导式清理
-- Prometheus 指标、通知与细粒度 RBAC
-- 面向远程 NAS 推送的多节点 Agent
-
-项目使用 [MIT License](LICENSE)。
+Atomic Sync 使用 [MIT License](LICENSE) 发布。

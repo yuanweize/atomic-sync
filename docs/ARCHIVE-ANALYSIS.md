@@ -1,61 +1,93 @@
 # Branch-aware archive analysis
 
-Union filesystems such as mergerfs merge directory names and directory contents. A path visible at `/media/merged/Show` may contain files from both `/media/source/Show` and `/media/archive/Show`. The merged path is useful to consumers such as Sonarr, but it cannot answer whether the source branch has been fully archived.
+Union filesystems such as mergerfs merge directory names and contents from multiple physical branches. A path visible at `/data/merged/Show` can contain some files from StorageBox and others from Google Drive. That merged path is useful to Sonarr and media players, but it cannot prove whether the source branch has been archived.
 
-Atomic Sync always analyzes the physical job source and its assigned physical destination. Never configure the mergerfs union as both the source of truth and the archive destination.
+Atomic Sync always analyzes the physical job source and each configured physical destination. Do not configure the mergerfs union as both the source of truth and the archive destination.
 
 ## Decision model
 
-The analyzer runs `rclone lsjson --recursive` once for the source and once for each configured destination. It groups every entry using the job's atomic-unit policy, then compares each source file with the same relative path at the selected destination.
+The analyzer runs `rclone lsjson --recursive` once for the source and once for each destination. It groups entries using the job's complete-directory policy, then compares every source file with the same relative path at the unit's assigned destination.
 
 ```text
-source has no files + destination files present  → archived
-source files present + destination unit absent   → pending
-destination has files but some source files are missing → partial
-all source paths/sizes match                     → ready-to-verify
-same relative path, different size               → conflict
-same relative path, file/directory type differs  → conflict
-files exist outside the unit's assigned destination → conflict
-no files on either branch                        → empty
+source has no files + destination has files       → archived
+source has files + destination has no files       → pending
+destination has files but misses source files     → partial
+all source paths and sizes match                  → ready-to-verify
+same relative path, different size or type        → conflict
+files exist outside the assigned destination      → conflict
+neither branch has files                           → empty
 ```
 
-“Source has no files” includes an empty source directory shell. This matters with mergerfs: the shell may remain visible on StorageBox even though every real object lives on GD. The API exposes `sourcePresent` and `destinationPresent` so operators can distinguish an absent unit from an empty shell without changing the macro status.
+“Source has no files” includes an empty source directory shell. This matters with mergerfs: the shell can remain visible on StorageBox even though every real object lives on GD. The API separately reports `sourcePresent` and `destinationPresent`, so an operator can distinguish an absent unit from an empty shell without changing its macro status.
 
-Destination-only extra files do not reduce source coverage. They may have been archived earlier or created by a media manager. They are never removed by analysis. A unit can therefore be `partial` with 0% source coverage when its two physical branches contain entirely complementary files: the destination already holds part of the merged unit, but none of the files still on the source has reached that destination yet.
+Destination-only extra files do not reduce source coverage. They may have been archived earlier or created by a media manager. Analysis never removes them. A unit can therefore be `partial` with 0% source coverage when the two physical branches contain entirely complementary files: the destination already holds part of the merged unit, but none of the files still present at the source has reached it.
 
-Analysis intentionally describes the complete physical unit. Version 0.1.x rejects `include`/`exclude` filters, move mode, and `deleteSource`; analysis never authorizes or performs source cleanup.
+An empty destination directory alone is not evidence of progress. If the source has files, the unit remains `pending`.
 
-Any source or destination listing error fails the whole analysis. An exhausted cloud API is never converted into an empty inventory or a false `archived` result.
+## What each state does—and does not—prove
 
-A successful zero-file source listing is valid when the whole library has been archived. Filesystem availability must therefore be verified independently before analysis. The reference Compose model sets `create_host_path: false`, and operators should verify the expected mount type with `findmnt` or an equivalent health check before starting the container. No file inventory can distinguish a genuinely empty share from an existing but unmounted empty directory.
+| Status | Evidence in this snapshot | What it does not prove |
+|---|---|---|
+| `archived` | Destination files exist and no source files were listed | That a previous Atomic Sync run created them, or that the source mount is healthy |
+| `ready-to-verify` | Every source relative path has the same size at the assigned destination | Equal file content or permission to delete the source |
+| `partial` | Both sides contain content, but the destination does not cover all source paths | Whether a transfer is active, interrupted, or historically split |
+| `pending` | Source has files and the destination has none | Whether the stable window has elapsed |
+| `conflict` | At least one size/type or destination-placement invariant is violated | Which branch is authoritative |
+| `empty` | Neither side contains files | Whether an empty shell is safe to remove |
 
-For jobs with multiple weighted destinations, existing SQLite assignments win. An unassigned source unit uses the same deterministic weighted selection as execution without persisting a new assignment. A destination-only unit is consolidated into one logical result on the branch that contains it. If files for that unit also exist on another configured destination, the result becomes `conflict`; empty directory shells on secondary destinations remain presence metadata and do not create a false conflict.
+`archived` is a conclusion about the current inventories, not historical proof of a completed move. A successful zero-file listing is valid after a real move, but the same result is possible when an existing mountpoint has lost its backing filesystem. Verify mount type and availability independently before trusting analysis.
 
-## What “100%” means
+The reference Compose model sets `create_host_path: false`, which prevents Docker from silently creating a missing bind source. It cannot distinguish a genuinely empty mounted share from an already-existing but unmounted empty directory.
 
-Dashboard coverage is the percentage of source file paths whose destination size matches. It is a low-I/O planning signal, not proof that file contents are identical. `archived` is displayed as 100% because no source files remain; this is completion state, not historical proof of how the destination files arrived.
+Any source or destination listing error fails the complete analysis. Exhausted Drive quota is never converted into an empty inventory or a false `archived` result.
 
-Calculating source checksums across a multi-terabyte CIFS mount merely to refresh a dashboard would be expensive and could disrupt playback. Atomic Sync therefore reserves content verification for an explicit run:
+## Multiple destination branches
 
-1. Copy source to hidden staging.
-2. Verify the selected source set and staging bidirectionally; they must match exactly under the same filters.
-3. Publish or immutable-merge staging.
-4. Verify the original source against the final destination: exact and bidirectional for a new destination, or one-way completeness for `merge-immutable` so reviewed destination-only objects can remain.
-5. Mark the verified copy complete and retain the source.
+Existing SQLite assignments take precedence. An unassigned source unit uses the same deterministic weighted selection as execution without persisting a new assignment during analysis.
 
-`verify: checksum` currently runs `rclone check --download`. It reads every compared file in full from both endpoints, avoiding backend-hash compatibility assumptions at the cost of substantial source and cloud I/O. `verify: size` uses size-only comparison, reads metadata instead of file contents, and offers weaker assurance.
+A destination-only unit is consolidated into one logical result on the branch that contains it. If files for that unit also exist on another configured destination, the result becomes `conflict`. Empty directory shells on secondary destinations remain presence metadata and do not create a false conflict.
 
-For a new destination, promotion moves the hidden destination-side staging directory to its final name. For `merge-immutable`, the hidden staging copy is retained after a successful run as recovery and audit material; Atomic Sync never performs automatic staging cleanup.
+Assignments are important with mergerfs: a file found somewhere in the merged archive is not necessarily on the branch selected for that unit. Atomic Sync reports content outside the selected branch rather than silently treating it as complete.
+
+## Copy and move interpretation
+
+Both product modes transfer directly to the assigned final path through rclone:
+
+- after `copy`, a complete result normally appears as `ready-to-verify` because the source intentionally remains;
+- after `move`, a complete result normally appears as `archived` because rclone has removed successfully moved source files;
+- an interrupted or failed direct transfer can appear as `partial`, which is why same-named directories on both branches are never treated as success by themselves.
+
+Move jobs may use either conflict policy and verification mode. `fail + size` is the fastest clean-destination canary; after reviewing a partial unit, `merge-immutable + checksum` provides stronger evidence for paths rclone actually transfers. Every move uses `--ignore-existing`, so destination-overlap paths are skipped rather than checksummed and still require independent content proof. Analysis itself remains metadata-first and does not perform transfer verification.
+
+Atomic Sync does not expose rclone `sync`, so destination-only files are not pruned during either mode. Analysis is read-only and never authorizes a move or deletes content.
+
+## Coverage and content verification
+
+Dashboard coverage is the percentage of source file paths whose destination size matches. It is a low-I/O planning signal, not content-integrity proof. `archived` is displayed as 100% because no source files remain; this is a completion state, not evidence of how the destination files arrived.
+
+Calculating checksums across a multi-terabyte CIFS mount merely to refresh a dashboard could disrupt imports and playback. Content verification is therefore explicit:
+
+- `verify: size` compares paths and byte counts without reading file contents;
+- `verify: checksum` enables rclone's `--checksum` transfer comparison and a hash supported by both backends when one is available;
+- an independent `rclone check --download` is an optional deep audit that reads file contents from both sides and should be reserved for selected, quiesced units.
+
+For a local or CIFS-mounted source and Google Drive, normal checksum transfer verification can calculate the local MD5 and compare it with Drive's stored MD5. It does not normally need to download the Drive object. Exact hash availability remains an rclone/backend property. Rclone owns this transfer verification, retries, and resumability. Every invocation is pinned to the discovery fingerprint's file paths through a temporary `--files-from-raw` manifest. After every non-dry-run copy or move, Atomic Sync separately requires each discovered file at the final destination with the same path and size; move then checks source residue. The manifest and metadata-completeness gate are not staging, a second content transfer, or `rclone check`.
+
+Job validation rejects any source or destination endpoint whose normalized path contains a segment exactly named `.atomic-sync-staging`. A valid parent destination may still contain a legacy child with that name; destination inventory deliberately excludes the child. Version 0.2 never creates, transfers, or deletes that legacy recovery namespace; inventory and verify it separately before any explicit manual cleanup. Source discovery also fails closed if it encounters the namespace below an allowed source endpoint rather than silently treating it as media.
 
 ## Analysis units versus executable units
 
-The analyzer records malformed or scattered physical layouts so operators can repair them, but execution is stricter. A runnable unit must resolve to a directory at one fixed grouping depth: one top-level directory for `folder`/`show`, `Show/Season` for `season`, or exactly the configured `depth`. A shallow media file or a discovered parent/child unit overlap fails the entire run before staging. This prevents a root-level episode and its season directory from being copied as two independent units.
+The analyzer records malformed and scattered physical layouts so operators can repair them, but execution is stricter. A runnable unit must resolve to a directory at one fixed boundary:
 
-An analysis status, including `ready-to-verify`, is not permission to delete source data. Source cleanup is outside Atomic Sync v0.1.x and requires the quiesced manual workflow in [Operations](OPERATIONS.md#manual-source-cleanup-outside-atomic-sync).
+- `folder` and `show`: one top-level directory;
+- `season`: exactly `Show/Season`;
+- `depth`: exactly the configured positive number of directory components.
 
-## Interpreting overlapping folders
+A media file above that boundary is shallow. A discovery result containing both a parent directory and one of its descendants as separate units is ambiguous. Either condition fails the complete run before any rclone write starts. This prevents a root-level episode and its `Season 03` directory from being handled as independent archive units.
 
-Consider a show with two episodes:
+## Examples
+
+### Partially archived show
 
 ```text
 StorageBox/Show/Season 01/E01.mkv
@@ -63,30 +95,37 @@ StorageBox/Show/Season 01/E02.mkv
 GD/Show/Season 01/E01.mkv
 ```
 
-mergerfs displays both episodes inside one `Show` directory. Atomic Sync reports the unit as `partial`, with 1/2 matching source files and one missing sample. It does not call the show archived merely because both branches contain `Show`.
+mergerfs displays both episodes inside one `Show`. Atomic Sync reports `partial`, with one of two source files covered and one missing sample.
 
-If the GD copy of `E01.mkv` has a different size, the status becomes `conflict`. `merge-immutable` refuses to overwrite it. Select the authoritative file manually before retrying.
+If GD's `E01.mkv` has a different size, the unit becomes `conflict`. The immutable merge policy will not overwrite it; select the authoritative copy before retrying.
 
-The overlap can also be completely scattered:
+### Completely complementary branches
 
 ```text
 StorageBox/Movie/main.mkv
 GD/Movie/poster.jpg
 ```
 
-The merged directory contains both files, but GD contains none of the source-side payload. Atomic Sync reports `partial` with 0% source coverage, not `archived` and not `ready-to-verify`. If GD has only an empty `Movie` directory, the result is instead `pending`; an empty directory shell is not evidence that any file was archived.
+The merged directory contains both files, but GD contains none of the source payload. The result is `partial` with 0% source coverage—not `archived` and not `ready-to-verify`.
 
-If both source files match GD but remain on StorageBox, the status is `ready-to-verify`, not `archived`. This distinction prevents an unverified duplicate from being mistaken for successful cleanup.
+### Source retained after copy
+
+```text
+StorageBox/Movie/main.mkv
+GD/Movie/main.mkv
+```
+
+When sizes match, analysis reports `ready-to-verify`. This is the expected physical state after copy mode; it does not silently reinterpret the duplicate as a move.
 
 ## Performance and API quota
 
 - Analysis is read-only and metadata-first.
 - Only one analysis runs at a time per Atomic Sync process.
-- Destinations are listed sequentially to avoid bursts against cloud APIs.
-- Repeated manual refreshes should be avoided while a Drive API quota is exhausted.
-- Execution concurrency and analysis concurrency are separate limits.
+- Destinations are listed sequentially to avoid quota bursts.
+- Analysis and execution have separate concurrency limits.
+- Persisted results let the UI display the latest snapshot without rescanning remote branches.
 
-Analysis results are persisted in SQLite. The UI can show the latest result without rescanning the branches.
+Avoid repeated manual refreshes while Drive reports quota exhaustion. Pause new scans, identify other consumers of the same OAuth project, wait for the quota window to recover, then resume one analysis at a time.
 
 ## Empty directories
 

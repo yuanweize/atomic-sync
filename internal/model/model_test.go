@@ -7,13 +7,15 @@ import (
 )
 
 func TestStateTransitions(t *testing.T) {
-	for _, transition := range [][2]string{{"discovered", "staging"}, {"discovered", "completed"}, {"staging", "verifying"}, {"verifying", "publishing"}, {"publishing", "completed"}} {
+	for _, transition := range [][2]string{
+		{"discovered", "transferring"}, {"transferring", "completed"},
+	} {
 		if !CanTransition(transition[0], transition[1]) {
 			t.Fatalf("expected %s -> %s to be valid", transition[0], transition[1])
 		}
 	}
-	if CanTransition("staging", "completed") {
-		t.Fatal("must not skip verification for a write run")
+	if CanTransition("transferring", "publishing") || CanTransition("discovered", "staging") {
+		t.Fatal("direct transfers must not enter legacy staging or publishing states")
 	}
 }
 
@@ -39,6 +41,18 @@ func TestJobValidation(t *testing.T) {
 	if err := valid().Validate(); err != nil {
 		t.Fatalf("valid job rejected: %v", err)
 	}
+	move := valid()
+	move.Mode = ModeMove
+	move.DeleteSource = true
+	move.Verify = "size"
+	if err := move.Validate(); err != nil {
+		t.Fatalf("valid fail-closed size-verified move job rejected: %v", err)
+	}
+	move.ConflictPolicy = ConflictMergeImmutable
+	move.Verify = "checksum"
+	if err := move.Validate(); err != nil {
+		t.Fatalf("valid immutable checksum move job rejected: %v", err)
+	}
 	filteredCopy := valid()
 	filteredCopy.Include = []string{"*.mkv"}
 	if err := filteredCopy.Validate(); err == nil || !strings.Contains(err.Error(), "copied in full") {
@@ -47,22 +61,28 @@ func TestJobValidation(t *testing.T) {
 		t.Fatalf("validation error does not match ErrInvalidJob: %v", err)
 	}
 	tests := map[string]func(*Job){
-		"unsafe id":         func(job *Job) { job.ID = `x"><script>` },
-		"root source":       func(job *Job) { job.Source = "/" },
-		"config exfil":      func(job *Job) { job.Source = "/config" },
-		"backslash escape":  func(job *Job) { job.Source = `/sources\\media` },
-		"remote source":     func(job *Job) { job.Source = "GD:data/media" },
-		"remote root":       func(job *Job) { job.Source = "GD:" },
-		"overlap local":     func(job *Job) { job.Destinations[0].Path = "/sources/storagebox/movies/archive" },
-		"overlap remote":    func(job *Job) { job.Source, job.Destinations[0].Path = "GD:data", "GD:data/media" },
-		"zero weight":       func(job *Job) { job.Destinations[0].Weight = 0 },
-		"legacy sync":       func(job *Job) { job.Mode = "sync" },
-		"high concurrency":  func(job *Job) { job.Concurrency = 9 },
-		"bad conflict":      func(job *Job) { job.ConflictPolicy = "overwrite" },
-		"bad filter":        func(job *Job) { job.Include = []string{"*.mkv\n--delete"} },
-		"move mode":         func(job *Job) { job.Mode = "move" },
-		"source deletion":   func(job *Job) { job.DeleteSource = true },
-		"local dest escape": func(job *Job) { job.Destinations[0].Path = "/data/archive" },
+		"unsafe id":    func(job *Job) { job.ID = `x"><script>` },
+		"root source":  func(job *Job) { job.Source = "/" },
+		"config exfil": func(job *Job) { job.Source = "/config" },
+		"legacy staging source": func(job *Job) {
+			job.Source = "/sources/storagebox/.atomic-sync-staging/recovery"
+		},
+		"backslash escape":    func(job *Job) { job.Source = `/sources\\media` },
+		"remote source":       func(job *Job) { job.Source = "GD:data/media" },
+		"remote root":         func(job *Job) { job.Source = "GD:" },
+		"overlap local":       func(job *Job) { job.Destinations[0].Path = "/sources/storagebox/movies/archive" },
+		"overlap remote":      func(job *Job) { job.Source, job.Destinations[0].Path = "GD:data", "GD:data/media" },
+		"zero weight":         func(job *Job) { job.Destinations[0].Weight = 0 },
+		"unsupported sync":    func(job *Job) { job.Mode = "sync" },
+		"high concurrency":    func(job *Job) { job.Concurrency = 9 },
+		"bad conflict":        func(job *Job) { job.ConflictPolicy = "overwrite" },
+		"bad filter":          func(job *Job) { job.Include = []string{"*.mkv\n--delete"} },
+		"move without delete": func(job *Job) { job.Mode = ModeMove },
+		"copy with delete":    func(job *Job) { job.DeleteSource = true },
+		"local dest escape":   func(job *Job) { job.Destinations[0].Path = "/data/archive" },
+		"legacy staging destination": func(job *Job) {
+			job.Destinations[0].Path = "GD:data/.atomic-sync-staging/recovery"
+		},
 		"duplicate dest": func(job *Job) {
 			job.Destinations = append(job.Destinations, Destination{Name: "gd-primary", Path: "GD2:data/media", Weight: 1})
 		},

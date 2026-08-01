@@ -76,10 +76,13 @@ func TestStoreLifecycle(t *testing.T) {
 	if err = database.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
+	if err = database.Transition(ctx, run.ID, "transferring", ""); err != nil {
+		t.Fatal(err)
+	}
 	if err = database.Transition(ctx, run.ID, "completed", "dry run"); err != nil {
 		t.Fatal(err)
 	}
-	if err = database.Transition(ctx, run.ID, "staging", ""); err == nil {
+	if err = database.Transition(ctx, run.ID, "transferring", ""); err == nil {
 		t.Fatal("invalid transition was accepted")
 	}
 	runs, err := database.Runs(ctx, 10)
@@ -142,7 +145,7 @@ func TestFailInterruptedRuns(t *testing.T) {
 	if err := database.CreateRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.Transition(ctx, run.ID, "staging", ""); err != nil {
+	if err := database.Transition(ctx, run.ID, "transferring", ""); err != nil {
 		t.Fatal(err)
 	}
 	count, err := database.FailInterruptedRuns(ctx, "recovered")

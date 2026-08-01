@@ -1,4 +1,5 @@
-# Optional design reference. Runtime jobs are persisted in SQLite via the UI/API.
+# Optional design reference. Runtime jobs are persisted in SQLite through the
+# UI/API; this file is not loaded by the current binary.
 # Never commit secrets or rclone.conf.
 listen: ":8080"
 dataDir: /data/atomic-sync
@@ -9,10 +10,19 @@ jobs:
       - name: gd-primary
         path: GD:media/movies
         weight: 1
+    # Exactly two modes exist:
+    #   copy -> direct rclone copy; source preserved; deleteSource must be false
+    #   move -> direct rclone move; source removed; deleteSource must be true
+    # Conflict policy and verification are independent choices for both modes.
+    # rclone sync is intentionally not exposed because it may prune destination files.
     mode: copy
+    deleteSource: false
     grouping: folder
+    # Production default: 30 days. Use 259200 only for a scoped dry-run canary.
     settleSeconds: 2592000
     concurrency: 2
+    # size is fastest; checksum enables rclone's --checksum comparison.
     verify: checksum
     conflictPolicy: fail
     dryRun: true
+    paused: true

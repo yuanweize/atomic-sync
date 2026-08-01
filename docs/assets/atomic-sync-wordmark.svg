@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 180" role="img" aria-labelledby="title desc">
-  <title id="title">Atomic Sync</title><desc id="desc">Atomic orbit and bidirectional synchronization mark with the Atomic Sync wordmark.</desc>
+  <title id="title">Atomic Sync</title><desc id="desc">Atomic orbit and one-way transfer mark with the Atomic Sync wordmark.</desc>
   <defs><linearGradient id="g" x1="30" y1="22" x2="160" y2="158" gradientUnits="userSpaceOnUse"><stop stop-color="#A69CFF"/><stop offset=".52" stop-color="#6C5CE7"/><stop offset="1" stop-color="#24D6B6"/></linearGradient><filter id="glow"><feGaussianBlur stdDeviation="7"/></filter></defs>
   <rect width="760" height="180" rx="34" fill="#0B0F1B"/>
   <circle cx="92" cy="90" r="58" fill="#12182A" stroke="#fff" stroke-opacity=".1"/>
@@ -7,7 +7,7 @@
   <ellipse cx="92" cy="90" rx="53" ry="23" fill="none" stroke="url(#g)" stroke-width="4" stroke-opacity=".75" transform="rotate(38 92 90)"/>
   <circle cx="128" cy="58" r="7" fill="#8B7CFF"/><circle cx="56" cy="112" r="6" fill="#24D6B6"/>
   <circle cx="92" cy="90" r="20" fill="url(#g)" opacity=".25" filter="url(#glow)"/>
-  <path d="M69 93h39l-10-10 7-7 22 22-22 22-7-7 11-11H69z" fill="url(#g)"/><path d="M115 87H76l10-10-7-7-22 22 22 22 7-7-11-11h40z" fill="#F6F7FB" fill-opacity=".9"/>
-  <text x="180" y="94" fill="#F6F7FB" font-family="Inter,Arial,sans-serif" font-size="58" font-weight="780" letter-spacing="-3">Atomic Sync</text>
-  <text x="183" y="128" fill="#98A1B7" font-family="Inter,Arial,sans-serif" font-size="17" font-weight="600" letter-spacing="3">STAGE · VERIFY · PUBLISH</text>
+  <path d="M62 85h42L93 74l8-8 25 25-25 25-8-8 12-12H62z" fill="url(#g)"/>
+  <text x="180" y="94" fill="#F6F7FB" font-family="Inter,Arial,sans-serif" font-size="58" font-weight="780" letter-spacing="0">Atomic Sync</text>
+  <text x="183" y="128" fill="#98A1B7" font-family="Inter,Arial,sans-serif" font-size="17" font-weight="600" letter-spacing="0">PLAN · TRANSFER · AUDIT</text>
 </svg>

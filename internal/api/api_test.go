@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,17 @@ type apiHarness struct {
 	handler http.Handler
 	store   *store.Store
 	runner  *engine.Runner
+}
+
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+	once    sync.Once
+	flushed chan struct{}
+}
+
+func (recorder *flushRecorder) Flush() {
+	recorder.ResponseRecorder.Flush()
+	recorder.once.Do(func() { close(recorder.flushed) })
 }
 
 func newHarness(t *testing.T, token string) apiHarness {
@@ -130,6 +142,33 @@ func TestProtectedAPIRequiresBearerToken(t *testing.T) {
 	}
 }
 
+func TestEventStreamFlushesHeadersImmediately(t *testing.T) {
+	harness := newHarness(t, "secret-token")
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer secret-token")
+	recorder := &flushRecorder{ResponseRecorder: httptest.NewRecorder(), flushed: make(chan struct{})}
+	done := make(chan struct{})
+	go func() {
+		harness.handler.ServeHTTP(recorder, request)
+		close(done)
+	}()
+	select {
+	case <-recorder.flushed:
+		if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "text/event-stream" {
+			t.Fatalf("event stream headers = %d %#v", recorder.Code, recorder.Header())
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("event stream did not flush before its first heartbeat")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("event stream did not stop after cancellation")
+	}
+}
+
 func TestCreateJobGeneratesSafeIDAndDefaultsToDryRun(t *testing.T) {
 	harness := newHarness(t, "secret-token")
 	payload := `{
@@ -147,12 +186,34 @@ func TestCreateJobGeneratesSafeIDAndDefaultsToDryRun(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(job.ID, "job_") || strings.Contains(job.ID, "script") || !job.DryRun {
+	if !strings.HasPrefix(job.ID, "job_") || strings.Contains(job.ID, "script") || !job.DryRun || job.SettleSeconds != defaultSettleSeconds {
 		t.Fatalf("unsafe create result: %#v", job)
 	}
 	stored, err := harness.store.Job(context.Background(), job.ID)
 	if err != nil || stored.ID != job.ID || stored.CreatedAt.IsZero() {
 		t.Fatalf("job not persisted: %#v %v", stored, err)
+	}
+}
+
+func TestCreatePreservesExplicitZeroStableWindow(t *testing.T) {
+	harness := newHarness(t, "secret-token")
+	payload := `{
+      "name":"Immediate test",
+      "source":"/sources/media/movies",
+      "destinations":[{"name":"gd-primary","path":"GD:data/media/movies","weight":1}],
+      "mode":"copy","grouping":"folder","settleSeconds":0,"concurrency":1,
+      "verify":"size","conflictPolicy":"fail","dryRun":true
+    }`
+	response := perform(harness.handler, http.MethodPost, "/api/jobs", "secret-token", strings.NewReader(payload))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create returned %d: %s", response.Code, response.Body.String())
+	}
+	var job model.Job
+	if err := json.Unmarshal(response.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.SettleSeconds != 0 {
+		t.Fatalf("explicit zero stable window changed to %d", job.SettleSeconds)
 	}
 }
 
@@ -241,7 +302,7 @@ func TestPausedJobCannotRun(t *testing.T) {
 	}
 }
 
-func TestLegacyDestructiveJobReturnsBadRequest(t *testing.T) {
+func TestInvalidMoveJobReturnsBadRequest(t *testing.T) {
 	harness := newHarness(t, "token")
 	job := validAPIJob("job_legacy_move")
 	job.Mode = "move"
@@ -250,9 +311,46 @@ func TestLegacyDestructiveJobReturnsBadRequest(t *testing.T) {
 	}
 	for _, target := range []string{"/api/jobs/job_legacy_move/run", "/api/jobs/job_legacy_move/analysis"} {
 		response := perform(harness.handler, http.MethodPost, target, "token", nil)
-		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "mode must be copy") {
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "requires deleteSource=true") {
 			t.Fatalf("legacy destructive job %s returned %d: %s", target, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestMoveRunRequiresExactJobNameConfirmation(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "empty-rclone")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n[ \"$1\" = lsjson ] && printf '[]'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	harness := newHarnessWithRclone(t, "token", script)
+	job := validAPIJob("job_move")
+	job.Name = "Move archive"
+	job.Mode = model.ModeMove
+	job.DeleteSource = true
+	job.ConflictPolicy = model.ConflictMergeImmutable
+	job.DryRun = false
+	if err := harness.store.SaveJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	for _, confirmation := range []string{"", "move archive", "Move archive "} {
+		request := httptest.NewRequest(http.MethodPost, "/api/jobs/job_move/run", nil)
+		request.Header.Set("Authorization", "Bearer token")
+		if confirmation != "" {
+			request.Header.Set(destructiveConfirmationHeader, confirmation)
+		}
+		response := httptest.NewRecorder()
+		harness.handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "exact job name") {
+			t.Fatalf("confirmation %q returned %d: %s", confirmation, response.Code, response.Body.String())
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/jobs/job_move/run", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	request.Header.Set(destructiveConfirmationHeader, job.Name)
+	response := httptest.NewRecorder()
+	harness.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("confirmed move returned %d: %s", response.Code, response.Body.String())
 	}
 }
 

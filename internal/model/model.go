@@ -9,6 +9,12 @@ import (
 )
 
 const (
+	ModeCopy = "copy"
+	ModeMove = "move"
+	// LegacyStagingNamespace is reserved for recovery data created by v0.1.
+	// Current jobs must never use it as a source or destination endpoint.
+	LegacyStagingNamespace = ".atomic-sync-staging"
+
 	ConflictFail           = "fail"
 	ConflictMergeImmutable = "merge-immutable"
 
@@ -100,11 +106,9 @@ type UnitAnalysis struct {
 }
 
 var transitions = map[string]map[string]bool{
-	"discovered": {"staging": true, "completed": true, "failed": true},
-	"staging":    {"verifying": true, "failed": true},
-	"verifying":  {"publishing": true, "failed": true},
-	"publishing": {"completed": true, "failed": true},
-	"failed":     {"staging": true},
+	"discovered":   {"transferring": true, "failed": true},
+	"transferring": {"completed": true, "failed": true},
+	"failed":       {"transferring": true},
 }
 
 func CanTransition(from, to string) bool { return transitions[from][to] }
@@ -115,7 +119,7 @@ func (j *Job) Normalize() {
 	j.Name = strings.TrimSpace(j.Name)
 	j.Source = strings.TrimSpace(j.Source)
 	if j.Mode == "" {
-		j.Mode = "copy"
+		j.Mode = ModeCopy
 	}
 	if j.Grouping == "" {
 		j.Grouping = "folder"
@@ -183,6 +187,9 @@ func (j Job) Validate() error {
 	if !validSourceEndpoint(j.Source) {
 		return invalid("source must be an absolute path below /sources")
 	}
+	if endpointContainsSegment(j.Source, LegacyStagingNamespace) {
+		return invalid("source must not address the reserved .atomic-sync-staging namespace")
+	}
 	if err := j.validateExecutionOptions(); err != nil {
 		return err
 	}
@@ -196,8 +203,17 @@ func (j Job) validateExecutionOptions() error {
 	if len(j.Destinations) == 0 || len(j.Destinations) > 16 {
 		return invalid("between 1 and 16 destinations are required")
 	}
-	if j.Mode != "copy" {
-		return invalid("mode must be copy; automatic source deletion is not supported")
+	switch j.Mode {
+	case ModeCopy:
+		if j.DeleteSource {
+			return invalid("copy mode must preserve the source")
+		}
+	case ModeMove:
+		if !j.DeleteSource {
+			return invalid("move mode requires deleteSource=true")
+		}
+	default:
+		return invalid("mode must be copy or move")
 	}
 	if j.Grouping != "folder" && j.Grouping != "show" && j.Grouping != "season" && j.Grouping != "depth" {
 		return invalid("grouping must be folder, show, season, or depth")
@@ -220,9 +236,6 @@ func (j Job) validateExecutionOptions() error {
 	if j.ConflictPolicy != ConflictFail && j.ConflictPolicy != ConflictMergeImmutable {
 		return invalid("conflictPolicy must be fail or merge-immutable")
 	}
-	if j.DeleteSource {
-		return invalid("deleteSource is not supported; source data is always preserved")
-	}
 	return nil
 }
 
@@ -239,6 +252,9 @@ func (j Job) validateDestinations() error {
 		names[d.Name] = struct{}{}
 		if !validDestinationEndpoint(d.Path) {
 			return invalid("destination paths must be rclone paths or absolute paths below /destinations")
+		}
+		if endpointContainsSegment(d.Path, LegacyStagingNamespace) {
+			return invalid("destinations must not address the reserved .atomic-sync-staging namespace")
 		}
 		if overlappingEndpoint(j.Source, d.Path) {
 			return invalid("source and destination must not overlap")
@@ -288,6 +304,19 @@ func validLocalEndpointBelow(value, root string) bool {
 	}
 	clean := path.Clean(value)
 	return strings.HasPrefix(clean, root+"/")
+}
+
+func endpointContainsSegment(value, segment string) bool {
+	endpointPath := strings.ReplaceAll(value, `\`, "/")
+	if index := strings.Index(endpointPath, ":"); index > 0 && !strings.HasPrefix(endpointPath, "/") {
+		endpointPath = endpointPath[index+1:]
+	}
+	for _, part := range strings.Split(strings.Trim(path.Clean(endpointPath), "/"), "/") {
+		if part == segment {
+			return true
+		}
+	}
+	return false
 }
 
 func overlappingEndpoint(a, b string) bool {

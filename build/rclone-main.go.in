@@ -14,7 +14,7 @@ import (
 	_ "github.com/rclone/rclone/cmd/copy"
 	_ "github.com/rclone/rclone/cmd/lsf"
 	_ "github.com/rclone/rclone/cmd/lsjson"
-	_ "github.com/rclone/rclone/cmd/moveto"
+	_ "github.com/rclone/rclone/cmd/move"
 	_ "github.com/rclone/rclone/cmd/version"
 )
 

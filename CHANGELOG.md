@@ -4,6 +4,40 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-01
+
+### Added
+
+- Direct move mode for high-throughput source-to-destination archival through rclone.
+- Destructive-intent pairing: `copy` requires `deleteSource: false`, while `move` requires `deleteSource: true`; conflict policy and verification remain independent operator choices.
+- Exact job-name confirmation for non-dry-run move execution through both the API and web control plane.
+- Real rclone dry-runs that exercise destination access and transfer planning without modifying source or destination media objects; OAuth token refresh remains possible.
+- Per-unit stable-window revalidation immediately before every rclone operation.
+- Per-invocation temporary `--files-from-raw` manifests generated from discovery fingerprints, pinning rclone to the reviewed file set without creating staging or a media copy.
+- Optional uncapped rclone TPS mode (`ATOMIC_RCLONE_TPS_LIMIT=0`) for measured dedicated-OAuth deployments.
+
+### Changed
+
+- Use rclone as the sole transfer data plane and write each unit directly to the assigned final destination in one transfer.
+- Stream checks and transfers without `--check-first` to reduce startup latency and improve throughput.
+- Protect every non-dry-run copy or move with a final path-and-size inventory against the discovery fingerprint; move additionally uses native `--ignore-existing` and a source-residue check so a missing discovered object or destination overlap cannot be reported complete.
+- Clarify that move overlap paths skipped by `--ignore-existing` are not checksum evidence and require an independent content check before cleanup.
+- Update the minimal rclone build to 1.75.0, including upstream local-path and dependency security fixes.
+- Reduce the public model to exactly two operations: source-preserving `copy` and source-removing `move`. Rclone `sync` is intentionally absent because it may delete destination-only content.
+- Execute `merge-immutable` directly against the final destination with overwrite protection, preserving destination-only files.
+- Map checksum verification to rclone's `--checksum` comparison so compatible backend hashes can be used without downloading both copies; keep `--size-only` as the fastest metadata path.
+- Rework the bilingual documentation and control plane around complete-directory transfers, mergerfs branch evidence, explicit destructive intent, recovery, and throughput tuning.
+- Keep the repository stable-window default at 30 days; document three days only as a scoped dry-run/canary profile.
+- Pass a positive stable window to rclone as `--min-age <seconds>s`, while the pinned manifest prevents files arriving after revalidation from joining the transfer.
+- Reserve `.atomic-sync-staging` at the endpoint boundary: source or destination endpoints containing that exact path segment are rejected, while destination analysis ignores a legacy child below an otherwise valid parent. Version 0.2 does not create, transfer, or delete the namespace, and source discovery fails closed when it is encountered.
+
+### Security
+
+- Keep the reference Compose source bind read-only and all new jobs dry-run by default; production move requires an explicit writable-source opt-in.
+- Preserve immutable destination conflict handling and cross-job path-overlap rejection for both modes.
+- Revalidate the discovery fingerprint immediately before rclone, pin its file set in a temporary manifest, and require every discovered path and size after every non-dry-run copy or move; move then checks source residue. These metadata gates narrow time-of-check/time-of-use races without a second content transfer, but are not writer locks or proof against preserved-mtime equal-size rewrites.
+- Require a dedicated Google OAuth client before aggressive Drive concurrency tuning, and document the multiplication of process and per-process transfer limits.
+
 ## [0.1.3] - 2026-08-01
 
 ### Fixed
@@ -51,8 +85,9 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Release-time verification of the Cosign identity, SBOM, provenance, and
   anonymous GHCR access.
 
-[Unreleased]: https://github.com/yuanweize/atomic-sync/compare/v0.1.3...HEAD
-[0.1.3]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.3
-[0.1.2]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.2
-[0.1.1]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.1
-[0.1.0]: https://github.com/yuanweize/atomic-sync/releases/tag/v0.1.0
+[Unreleased]: https://github.com/yuanweize/Atomic-Sync/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/yuanweize/Atomic-Sync/compare/v0.1.3...v0.2.0
+[0.1.3]: https://github.com/yuanweize/Atomic-Sync/releases/tag/v0.1.3
+[0.1.2]: https://github.com/yuanweize/Atomic-Sync/releases/tag/v0.1.2
+[0.1.1]: https://github.com/yuanweize/Atomic-Sync/releases/tag/v0.1.1
+[0.1.0]: https://github.com/yuanweize/Atomic-Sync/releases/tag/v0.1.0

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path"
 	"sort"
@@ -26,6 +27,9 @@ var (
 	ErrJobActive = errors.New("job is already running")
 	ErrJobPaused = errors.New("job is paused")
 )
+
+// Keep ignoring staging data left by pre-v0.2 runs; new transfers never create it.
+const destinationStagingNamespace = model.LegacyStagingNamespace
 
 type Event struct {
 	Type     string          `json:"type"`
@@ -57,6 +61,19 @@ type listed struct {
 	Size    int64      `json:"Size"`
 }
 
+type unitFingerprintEntry struct {
+	isDir   bool
+	size    int64
+	modTime time.Time
+}
+
+type unitFingerprint map[string]unitFingerprintEntry
+
+type unitPlan struct {
+	path        string
+	fingerprint unitFingerprint
+}
+
 // rcloneTime accepts the empty string emitted by `rclone lsjson --no-modtime`.
 // Discovery still treats an empty value as unknown and fails closed whenever a
 // stable-window decision depends on it.
@@ -85,11 +102,11 @@ type inventory struct {
 type unitExecution struct {
 	job             model.Job
 	unit            string
+	fingerprint     unitFingerprint
 	destination     model.Destination
 	destinationName string
 	run             model.Run
 	source          string
-	stage           string
 	final           string
 }
 
@@ -103,15 +120,19 @@ func NewWithLimits(s *store.Store, rclone string, concurrency, transfers, checke
 	}
 	transfers = min(max(1, transfers), 64)
 	checkers = min(max(1, checkers), 64)
-	tpsLimit = min(max(1, tpsLimit), 64)
+	if tpsLimit < 0 {
+		tpsLimit = 2
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	rcloneArgs := []string{"--transfers", strconv.Itoa(transfers), "--checkers", strconv.Itoa(checkers)}
+	if tpsLimit > 0 {
+		tpsLimit = min(tpsLimit, 64)
+		rcloneArgs = append(rcloneArgs, "--tpslimit", strconv.Itoa(tpsLimit), "--tpslimit-burst", strconv.Itoa(tpsLimit))
+	}
 	r := &Runner{
 		store: s, rclone: rclone,
-		rcloneArgs: []string{
-			"--transfers", strconv.Itoa(transfers), "--checkers", strconv.Itoa(checkers),
-			"--tpslimit", strconv.Itoa(tpsLimit), "--tpslimit-burst", "1",
-		},
-		sem: make(chan struct{}, concurrency), analysisSem: make(chan struct{}, 1),
+		rcloneArgs: rcloneArgs,
+		sem:        make(chan struct{}, concurrency), analysisSem: make(chan struct{}, 1),
 		ctx: ctx, cancel: cancel, active: map[string]bool{}, subscribers: map[chan Event]struct{}{},
 	}
 	r.execute = r.execRclone
@@ -330,12 +351,16 @@ func (r *Runner) run(ctx context.Context, j model.Job) error {
 	return r.runUnits(ctx, j, units)
 }
 
-func (r *Runner) runUnits(ctx context.Context, job model.Job, units []string) error {
-	if err := validateIndependentUnits(units); err != nil {
+func (r *Runner) runUnits(ctx context.Context, job model.Job, units []unitPlan) error {
+	unitPaths := make([]string, len(units))
+	for index := range units {
+		unitPaths[index] = units[index].path
+	}
+	if err := validateIndependentUnits(unitPaths); err != nil {
 		return err
 	}
 	workers := min(max(1, job.Concurrency), len(units))
-	unitCh := make(chan string)
+	unitCh := make(chan unitPlan)
 	var workersWG sync.WaitGroup
 	var errMu sync.Mutex
 	var errs []error
@@ -352,21 +377,21 @@ func (r *Runner) runUnits(ctx context.Context, job model.Job, units []string) er
 	return errors.Join(errs...)
 }
 
-func (r *Runner) unitWorker(ctx context.Context, job model.Job, units <-chan string, workers *sync.WaitGroup, errMu *sync.Mutex, errs *[]error) {
+func (r *Runner) unitWorker(ctx context.Context, job model.Job, units <-chan unitPlan, workers *sync.WaitGroup, errMu *sync.Mutex, errs *[]error) {
 	defer workers.Done()
 	for unit := range units {
 		err := r.runUnit(ctx, job, unit)
 		if err == nil {
 			continue
 		}
-		slog.Error("unit failed", "job", job.Name, "unit", unit, "error", err)
+		slog.Error("unit failed", "job", job.Name, "unit", unit.path, "error", err)
 		errMu.Lock()
-		*errs = append(*errs, fmt.Errorf("%s: %w", unit, err))
+		*errs = append(*errs, fmt.Errorf("%s: %w", unit.path, err))
 		errMu.Unlock()
 	}
 }
 
-func sendUnits(ctx context.Context, target chan<- string, units []string) {
+func sendUnits(ctx context.Context, target chan<- unitPlan, units []unitPlan) {
 	for _, unit := range units {
 		select {
 		case target <- unit:
@@ -376,43 +401,85 @@ func sendUnits(ctx context.Context, target chan<- string, units []string) {
 	}
 }
 
-func (r *Runner) discover(ctx context.Context, j model.Job) ([]string, error) {
-	out, err := r.command(ctx, "lsjson", j.Source, "--recursive", "--files-only")
+func (r *Runner) discover(ctx context.Context, j model.Job) ([]unitPlan, error) {
+	out, err := r.command(ctx, "lsjson", j.Source, "--recursive")
 	if err != nil {
 		return nil, err
 	}
-	var files []listed
-	if err = json.Unmarshal(out, &files); err != nil {
+	var entries []listed
+	if err = json.Unmarshal(out, &entries); err != nil {
 		return nil, fmt.Errorf("decode rclone listing: %w", err)
 	}
 	latest := map[string]time.Time{}
-	for _, file := range files {
-		unit := UnitFor(file.Path, j.Grouping, j.Depth)
-		if unit == "" {
-			return nil, fmt.Errorf("file %q is not inside a valid %s directory unit", file.Path, j.Grouping)
+	seen := make(map[string]struct{}, len(entries))
+	for index := range entries {
+		entry := &entries[index]
+		entry.Path = strings.ReplaceAll(entry.Path, `\`, "/")
+		if !safeRelative(entry.Path) {
+			return nil, fmt.Errorf("listing returned unsafe path %q", entry.Path)
 		}
-		if file.ModTime.IsZero() {
+		if _, exists := seen[entry.Path]; exists {
+			return nil, fmt.Errorf("listing returned ambiguous duplicate path %q", entry.Path)
+		}
+		seen[entry.Path] = struct{}{}
+		if entry.IsDir {
+			continue
+		}
+		if entry.Size < 0 {
+			return nil, fmt.Errorf("listing returned negative size for file %q", entry.Path)
+		}
+		unit := UnitFor(entry.Path, j.Grouping, j.Depth)
+		if unit == "" {
+			return nil, fmt.Errorf("file %q is not inside a valid %s directory unit", entry.Path, j.Grouping)
+		}
+		if entry.ModTime.IsZero() {
 			if j.SettleSeconds > 0 {
-				return nil, fmt.Errorf("file %q has no modification time; stable-window eligibility cannot be proven", file.Path)
+				return nil, fmt.Errorf("file %q has no modification time; stable-window eligibility cannot be proven", entry.Path)
 			}
 			if _, exists := latest[unit]; !exists {
 				latest[unit] = time.Time{}
 			}
 			continue
 		}
-		if file.ModTime.After(latest[unit]) {
-			latest[unit] = file.ModTime.Time
+		if entry.ModTime.After(latest[unit]) {
+			latest[unit] = entry.ModTime.Time
 		}
 	}
 	cutoff := time.Now().Add(-time.Duration(j.SettleSeconds) * time.Second)
-	units := make([]string, 0, len(latest))
+	unitPaths := make([]string, 0, len(latest))
 	for unit, modified := range latest {
 		if j.SettleSeconds <= 0 || modified.Before(cutoff) {
-			units = append(units, unit)
+			unitPaths = append(unitPaths, unit)
 		}
 	}
-	sort.Strings(units)
-	return units, nil
+	sort.Strings(unitPaths)
+	if err = validateIndependentUnits(unitPaths); err != nil {
+		return nil, err
+	}
+	plans := make([]unitPlan, len(unitPaths))
+	byPath := make(map[string]*unitPlan, len(unitPaths))
+	for index, unit := range unitPaths {
+		plans[index] = unitPlan{path: unit, fingerprint: unitFingerprint{}}
+		byPath[unit] = &plans[index]
+	}
+	for _, entry := range entries {
+		unit := UnitFor(entry.Path, j.Grouping, j.Depth)
+		if entry.IsDir {
+			unit = analysisUnit(entry, j)
+		}
+		plan := byPath[unit]
+		if plan == nil || entry.Path == unit {
+			continue
+		}
+		relative := strings.TrimPrefix(entry.Path, unit+"/")
+		if !safeRelative(relative) {
+			return nil, fmt.Errorf("listing returned unsafe unit-relative path %q", relative)
+		}
+		plan.fingerprint[relative] = unitFingerprintEntry{
+			isDir: entry.IsDir, size: entry.Size, modTime: entry.ModTime.Time,
+		}
+	}
+	return plans, nil
 }
 
 func validateIndependentUnits(units []string) error {
@@ -421,8 +488,8 @@ func validateIndependentUnits(units []string) error {
 		if !safeRelative(unit) {
 			return fmt.Errorf("unsafe unit path %q", unit)
 		}
-		if internalDestinationPath(unit) {
-			return fmt.Errorf("unit path %q uses the reserved .atomic-sync-staging namespace", unit)
+		if internalControlPath(unit) {
+			return fmt.Errorf("unit path %q uses a reserved Atomic Sync namespace", unit)
 		}
 		seen[unit] = struct{}{}
 	}
@@ -516,7 +583,7 @@ func (r *Runner) destinationInventory(ctx context.Context, root string, job mode
 func (r *Runner) scanInventory(ctx context.Context, root string, job model.Job, excludeInternal bool) (inventory, error) {
 	args := []string{"lsjson", root, "--recursive", "--no-modtime", "--no-mimetype"}
 	if excludeInternal {
-		args = append(args, "--exclude", "/.atomic-sync-staging/**")
+		args = append(args, "--exclude", "/"+destinationStagingNamespace+"/**")
 	}
 	out, err := r.command(ctx, args...)
 	if err != nil {
@@ -541,11 +608,11 @@ func addInventoryEntry(result *inventory, entry listed, job model.Job, excludeIn
 	if !safeRelative(entry.Path) {
 		return fmt.Errorf("listing returned unsafe path %q", entry.Path)
 	}
-	if internalDestinationPath(entry.Path) {
+	if internalControlPath(entry.Path) {
 		if excludeInternal {
 			return nil
 		}
-		return fmt.Errorf("source listing uses reserved .atomic-sync-staging path %q", entry.Path)
+		return fmt.Errorf("source listing uses reserved Atomic Sync path %q", entry.Path)
 	}
 	if existing, exists := result.kinds[entry.Path]; exists {
 		if existing != entry.IsDir {
@@ -573,8 +640,8 @@ func addInventoryEntry(result *inventory, entry listed, job model.Job, excludeIn
 	return addInventoryUnitEntry(unit, relative, entry)
 }
 
-func internalDestinationPath(relative string) bool {
-	return relative == ".atomic-sync-staging" || strings.HasPrefix(relative, ".atomic-sync-staging/")
+func internalControlPath(relative string) bool {
+	return relative == destinationStagingNamespace || strings.HasPrefix(relative, destinationStagingNamespace+"/")
 }
 
 func addUnmappedEmptyUnits(result *inventory, job model.Job) {
@@ -890,22 +957,23 @@ func newAnalysisSummary() map[string]int {
 	}
 }
 
-func (r *Runner) runUnit(ctx context.Context, j model.Job, unit string) error {
-	execution, err := r.prepareUnit(ctx, j, unit)
+func (r *Runner) runUnit(ctx context.Context, j model.Job, unit unitPlan) error {
+	execution, err := r.prepareUnit(ctx, j, unit.path)
 	if err != nil {
 		return err
 	}
+	execution.fingerprint = unit.fingerprint
 	fail := func(cause error) error { return r.failUnit(execution, cause) }
+	if err = r.transferUnit(ctx, execution); err != nil {
+		return fail(err)
+	}
 	if j.DryRun {
-		return r.complete(ctx, execution.run.ID, execution.run, "dry run: discovered and planned; no changes made")
+		return r.complete(execution.run.ID, execution.run, "rclone "+j.Mode+" dry run completed; no source or destination media objects changed")
 	}
-	if err = r.stageUnit(ctx, execution); err != nil {
-		return fail(err)
+	if j.Mode == model.ModeMove {
+		return r.complete(execution.run.ID, execution.run, "rclone move completed; source files removed by rclone after successful transfer")
 	}
-	if err = r.publishUnit(ctx, execution); err != nil {
-		return fail(err)
-	}
-	return r.complete(ctx, execution.run.ID, execution.run, "verified and published; source preserved")
+	return r.complete(execution.run.ID, execution.run, "rclone copy completed and verified; source preserved")
 }
 
 func (r *Runner) prepareUnit(ctx context.Context, job model.Job, unit string) (*unitExecution, error) {
@@ -943,7 +1011,6 @@ func (r *Runner) prepareUnit(ctx context.Context, job model.Job, unit string) (*
 	return &unitExecution{
 		job: job, unit: unit, destination: selected, destinationName: destinationName, run: run,
 		source: join(job.Source, unit),
-		stage:  join(selected.Path, path.Join(".atomic-sync-staging", job.ID, id, unit)),
 		final:  join(selected.Path, unit),
 	}, nil
 }
@@ -951,88 +1018,249 @@ func (r *Runner) prepareUnit(ctx context.Context, job model.Job, unit string) (*
 func (r *Runner) failUnit(execution *unitExecution, cause error) error {
 	transitionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = r.store.Transition(transitionCtx, execution.run.ID, "failed", cause.Error())
+	if err := r.store.Transition(transitionCtx, execution.run.ID, "failed", cause.Error()); err != nil {
+		cause = errors.Join(cause, fmt.Errorf("persist failed run state: %w", err))
+		slog.Error("failed run state was not persisted", "run", execution.run.ID, "error", err)
+	}
 	execution.run.State = "failed"
 	execution.run.Message = cause.Error()
 	r.emit(Event{Type: "run", Run: execution.run})
 	return cause
 }
 
-func (r *Runner) stageUnit(ctx context.Context, execution *unitExecution) error {
-	if err := r.store.Transition(ctx, execution.run.ID, "staging", ""); err != nil {
+func (r *Runner) transferUnit(ctx context.Context, execution *unitExecution) error {
+	if err := r.store.Transition(ctx, execution.run.ID, "transferring", ""); err != nil {
 		return err
 	}
-	if _, err := r.command(ctx, "copy", execution.source, execution.stage, "--create-empty-src-dirs"); err != nil {
-		return err
-	}
-	if err := r.store.Transition(ctx, execution.run.ID, "verifying", ""); err != nil {
-		return err
-	}
-	if err := r.check(ctx, execution.source, execution.stage, execution.job, false); err != nil {
-		return err
-	}
-	return r.store.Transition(ctx, execution.run.ID, "publishing", "")
-}
-
-func (r *Runner) publishUnit(ctx context.Context, execution *unitExecution) error {
-	switch execution.job.ConflictPolicy {
-	case model.ConflictFail:
-		if err := r.publishNewUnit(ctx, execution); err != nil {
+	if execution.job.ConflictPolicy == model.ConflictFail {
+		exists, err := r.pathExists(ctx, execution.final)
+		if err != nil {
 			return err
 		}
-	case model.ConflictMergeImmutable:
-		if err := r.publishImmutableMerge(ctx, execution); err != nil {
-			return err
+		if exists {
+			return fmt.Errorf("destination already exists: %s", execution.final)
 		}
-	default:
-		return fmt.Errorf("unsupported conflict policy %q", execution.job.ConflictPolicy)
 	}
-	oneWay := execution.job.ConflictPolicy == model.ConflictMergeImmutable
-	if err := r.check(ctx, execution.source, execution.final, execution.job, oneWay); err != nil {
-		return fmt.Errorf("final verification failed; source preserved: %w", err)
+	// Keep source revalidation as the last preflight. A destination can still
+	// race after its existence check, but --immutable fails closed in that case.
+	// Revalidating here minimizes the unprotected interval for an actively
+	// written source before rclone starts reading it.
+	if err := r.ensureUnitStable(ctx, execution); err != nil {
+		return err
 	}
-	return nil
-}
-
-func (r *Runner) publishNewUnit(ctx context.Context, execution *unitExecution) error {
-	exists, err := r.pathExists(ctx, execution.final)
+	manifest, err := createTransferManifest(execution.fingerprint)
 	if err != nil {
 		return err
 	}
-	if exists {
-		return fmt.Errorf("destination already exists: %s", execution.final)
+	defer func() {
+		if removeErr := os.Remove(manifest); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			slog.Warn("failed to remove transfer manifest", "path", manifest, "error", removeErr)
+		}
+	}()
+	args := []string{
+		execution.job.Mode, execution.source, execution.final,
+		"--immutable", "--files-from-raw", manifest,
 	}
-	if _, err = r.command(ctx, "moveto", execution.stage, execution.final, "--immutable"); err != nil {
-		return fmt.Errorf("publish failed (staging preserved): %w", err)
+	if execution.job.SettleSeconds > 0 {
+		args = append(args, "--min-age", strconv.Itoa(execution.job.SettleSeconds)+"s")
 	}
-	return nil
-}
-
-func (r *Runner) publishImmutableMerge(ctx context.Context, execution *unitExecution) error {
-	if _, err := r.command(ctx, "copy", execution.stage, execution.final, "--immutable", "--create-empty-src-dirs"); err != nil {
-		return fmt.Errorf("immutable merge failed (source and staging preserved): %w", err)
-	}
-	if err := r.check(ctx, execution.stage, execution.final, execution.job, true); err != nil {
-		return fmt.Errorf("immutable merge verification failed: %w", err)
-	}
-	return nil
-}
-
-func (r *Runner) check(ctx context.Context, source, destination string, j model.Job, oneWay bool) error {
-	// Successful rclone checks emit routine NOTICE summaries on stderr. Quiet
-	// suppresses those summaries while preserving non-zero exits and ERROR
-	// diagnostics for mismatches and I/O failures.
-	args := []string{"check", source, destination, "--quiet"}
-	if oneWay {
-		args = append(args, "--one-way")
-	}
-	if j.Verify == "size" {
-		args = append(args, "--size-only")
+	if execution.job.Verify == "checksum" {
+		args = append(args, "--checksum")
 	} else {
-		args = append(args, "--download")
+		args = append(args, "--size-only")
 	}
-	_, err := r.command(ctx, args...)
-	return err
+	if execution.job.Mode == model.ModeMove {
+		// Never let rclone's equality fallback turn an existing destination
+		// object into authorization to remove the source. In particular,
+		// --checksum can fall back to size when the backends share no hash.
+		// Native --ignore-existing keeps every overlap at the source while
+		// still moving missing objects at full rclone throughput.
+		args = append(args, "--ignore-existing", "--delete-empty-src-dirs")
+	} else {
+		args = append(args, "--create-empty-src-dirs")
+	}
+	if execution.job.DryRun {
+		args = append(args, "--dry-run")
+	}
+	if _, err := r.command(ctx, args...); err != nil {
+		if execution.job.DryRun {
+			return fmt.Errorf("rclone %s dry run failed; no source or destination media objects changed: %w", execution.job.Mode, err)
+		}
+		if execution.job.Mode == model.ModeMove {
+			return fmt.Errorf("rclone move failed; source and destination may each contain part of the unit: %w", err)
+		}
+		return fmt.Errorf("rclone copy failed; source preserved: %w", err)
+	}
+	if !execution.job.DryRun {
+		if err := r.verifyTransferDestination(ctx, execution); err != nil {
+			if execution.job.Mode == model.ModeMove {
+				return fmt.Errorf("rclone move finished but the destination does not contain the complete discovered unit; treat the unit as partial: %w", err)
+			}
+			return fmt.Errorf("rclone copy finished but the destination does not contain the complete discovered unit; source preserved: %w", err)
+		}
+	}
+	if execution.job.Mode == model.ModeMove && !execution.job.DryRun {
+		hasFiles, err := r.pathHasFiles(ctx, execution.source)
+		if err != nil {
+			return fmt.Errorf("rclone move transferred data but the remaining source could not be verified; treat the unit as partial: %w", err)
+		}
+		if hasFiles {
+			return errors.New("rclone move preserved source files whose destination paths already existed; the unit is partial and requires review")
+		}
+	}
+	return nil
+}
+
+func (r *Runner) ensureUnitStable(ctx context.Context, execution *unitExecution) error {
+	if execution.fingerprint == nil {
+		return errors.New("source unit has no discovery fingerprint")
+	}
+	current, err := r.scanUnitFingerprint(ctx, execution.source)
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-time.Duration(execution.job.SettleSeconds) * time.Second)
+	for relative, entry := range current {
+		if entry.isDir || execution.job.SettleSeconds <= 0 {
+			continue
+		}
+		if entry.modTime.IsZero() {
+			return fmt.Errorf("file %q has no modification time; stable-window eligibility cannot be proven", relative)
+		}
+		if !entry.modTime.Before(cutoff) {
+			return fmt.Errorf("source unit changed after discovery: file %q has not satisfied the stable window", relative)
+		}
+	}
+	return compareUnitFingerprints(execution.fingerprint, current)
+}
+
+func (r *Runner) scanUnitFingerprint(ctx context.Context, source string) (unitFingerprint, error) {
+	return r.scanFingerprint(ctx, source, "source revalidation")
+}
+
+func (r *Runner) scanFingerprint(ctx context.Context, target, operation string) (unitFingerprint, error) {
+	out, err := r.command(ctx, "lsjson", target, "--recursive")
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", operation, err)
+	}
+	var entries []listed
+	if err = json.Unmarshal(out, &entries); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", operation, err)
+	}
+	fingerprint := make(unitFingerprint, len(entries))
+	for _, entry := range entries {
+		entry.Path = strings.ReplaceAll(entry.Path, `\`, "/")
+		if !safeRelative(entry.Path) {
+			return nil, fmt.Errorf("%s returned unsafe path %q", operation, entry.Path)
+		}
+		if entry.Size < 0 && !entry.IsDir {
+			return nil, fmt.Errorf("%s returned negative size for file %q", operation, entry.Path)
+		}
+		if _, exists := fingerprint[entry.Path]; exists {
+			return nil, fmt.Errorf("%s returned ambiguous duplicate path %q", operation, entry.Path)
+		}
+		fingerprint[entry.Path] = unitFingerprintEntry{
+			isDir: entry.IsDir, size: entry.Size, modTime: entry.ModTime.Time,
+		}
+	}
+	return fingerprint, nil
+}
+
+func (r *Runner) verifyTransferDestination(ctx context.Context, execution *unitExecution) error {
+	current, err := r.scanFingerprint(ctx, execution.final, "verify transfer destination")
+	if err != nil {
+		return err
+	}
+	for _, relative := range sortedFingerprintPaths(execution.fingerprint) {
+		expected := execution.fingerprint[relative]
+		if expected.isDir {
+			continue
+		}
+		actual, exists := current[relative]
+		if !exists {
+			return fmt.Errorf("destination is missing discovered file %q", relative)
+		}
+		if actual.isDir {
+			return fmt.Errorf("destination path %q is a directory, expected a file", relative)
+		}
+		if actual.size != expected.size {
+			return fmt.Errorf("destination file %q has size %d, expected %d", relative, actual.size, expected.size)
+		}
+	}
+	if execution.job.ConflictPolicy == model.ConflictFail {
+		for _, relative := range sortedFingerprintPaths(current) {
+			if _, expected := execution.fingerprint[relative]; !expected {
+				return fmt.Errorf("destination contains unexpected path %q after fail-closed transfer", relative)
+			}
+		}
+	}
+	return nil
+}
+
+func createTransferManifest(fingerprint unitFingerprint) (string, error) {
+	file, err := os.CreateTemp("", "atomic-sync-files-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("create transfer manifest: %w", err)
+	}
+	name := file.Name()
+	remove := func() { _ = os.Remove(name) }
+	files := 0
+	for _, relative := range sortedFingerprintPaths(fingerprint) {
+		if fingerprint[relative].isDir {
+			continue
+		}
+		if _, err = file.WriteString(relative + "\n"); err != nil {
+			_ = file.Close()
+			remove()
+			return "", fmt.Errorf("write transfer manifest: %w", err)
+		}
+		files++
+	}
+	if err = file.Close(); err != nil {
+		remove()
+		return "", fmt.Errorf("close transfer manifest: %w", err)
+	}
+	if files == 0 {
+		remove()
+		return "", errors.New("source unit fingerprint contains no files")
+	}
+	return name, nil
+}
+
+func compareUnitFingerprints(expected, current unitFingerprint) error {
+	currentPaths := sortedFingerprintPaths(current)
+	for _, relative := range currentPaths {
+		if _, exists := expected[relative]; !exists {
+			return fmt.Errorf("source unit changed after discovery: added path %q", relative)
+		}
+	}
+	expectedPaths := sortedFingerprintPaths(expected)
+	for _, relative := range expectedPaths {
+		currentEntry, exists := current[relative]
+		if !exists {
+			return fmt.Errorf("source unit changed after discovery: deleted path %q", relative)
+		}
+		expectedEntry := expected[relative]
+		if currentEntry.isDir != expectedEntry.isDir {
+			return fmt.Errorf("source unit changed after discovery: type changed for path %q", relative)
+		}
+		if currentEntry.size != expectedEntry.size {
+			return fmt.Errorf("source unit changed after discovery: size changed for path %q", relative)
+		}
+		if !currentEntry.modTime.Equal(expectedEntry.modTime) {
+			return fmt.Errorf("source unit changed after discovery: modification time changed for path %q", relative)
+		}
+	}
+	return nil
+}
+
+func sortedFingerprintPaths(fingerprint unitFingerprint) []string {
+	paths := make([]string, 0, len(fingerprint))
+	for relative := range fingerprint {
+		paths = append(paths, relative)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func (r *Runner) pathExists(ctx context.Context, target string) (bool, error) {
@@ -1044,6 +1272,17 @@ func (r *Runner) pathExists(ctx context.Context, target string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("inspect destination: %w", err)
+}
+
+func (r *Runner) pathHasFiles(ctx context.Context, target string) (bool, error) {
+	out, err := r.command(ctx, "lsf", target, "--recursive", "--files-only")
+	if err == nil {
+		return len(bytes.TrimSpace(out)) > 0, nil
+	}
+	if isNotFound(out, err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("inspect remaining source: %w", err)
 }
 
 func isNotFound(output []byte, err error) bool {
@@ -1063,9 +1302,11 @@ func isNotFound(output []byte, err error) bool {
 	return false
 }
 
-func (r *Runner) complete(ctx context.Context, id string, run model.Run, message string) error {
-	if err := r.store.Transition(ctx, id, "completed", message); err != nil {
-		return err
+func (r *Runner) complete(id string, run model.Run, message string) error {
+	transitionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.store.Transition(transitionCtx, id, "completed", message); err != nil {
+		return fmt.Errorf("rclone operation completed but durable completion state could not be persisted; outcome requires reconciliation: %w", err)
 	}
 	run.State = "completed"
 	run.Message = message

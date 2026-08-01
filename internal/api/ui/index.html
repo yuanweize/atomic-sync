@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#080b13">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0c0d0f">
   <meta name="description" content="Atomic directory migration and media archive orchestration.">
   <title>Atomic Sync</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -12,47 +12,43 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <div class="ambient ambient-one" aria-hidden="true"></div>
-  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <a class="skip-link" href="#dashboardContent" data-i18n="skipToDashboard">Skip to dashboard</a>
   <main class="app-shell">
     <header class="topbar">
-      <a class="brand" href="/" aria-label="Atomic Sync home">
+      <a class="brand" href="/">
         <img src="/logo.svg" width="42" height="42" alt="">
         <span><strong>Atomic Sync</strong><small data-i18n="brandTagline">Archive orchestration</small></span>
       </a>
       <div class="top-actions">
         <span class="connection" id="connectionStatus" role="status"><i></i><span data-i18n="connecting">Connecting</span></span>
-        <button class="icon-button" id="languageButton" type="button" aria-label="Switch language">中</button>
-        <button class="button secondary compact" id="authButton" type="button" data-i18n="unlock">Unlock</button>
-        <button class="button primary compact" id="newJobButton" type="button"><span aria-hidden="true">＋</span><span data-i18n="newJob">New job</span></button>
+        <button class="icon-button" id="languageButton" type="button" aria-label="中 · Switch language" data-i18n-aria-label="switchLanguage">中</button>
+        <button class="button secondary compact" id="authButton" type="button" aria-label="Unlock" data-i18n-aria-label="unlock">
+          <span class="auth-label" data-i18n="unlock">Unlock</span>
+        </button>
+        <button class="button primary compact" id="newJobButton" type="button"><span>＋</span><span class="new-job-label" data-i18n="newJob">New job</span></button>
       </div>
     </header>
 
     <section class="hero" aria-labelledby="heroTitle">
-      <div>
-        <div class="eyebrow"><span></span><span data-i18n="eyebrow">CONTROL PLANE · SAFE BY DEFAULT</span></div>
-        <h1 id="heroTitle" data-i18n="heroTitle">Publish complete media units, preserve every source.</h1>
-        <p data-i18n="heroText">Stage, verify, publish, and recover every directory as one auditable operation.</p>
-      </div>
-      <div class="hero-mark" aria-hidden="true">
-        <span class="orbit orbit-one"></span><span class="orbit orbit-two"></span><span class="core">A</span>
-      </div>
+      <div class="eyebrow"><span></span><span data-i18n="eyebrow">CONTROL PLANE · SAFE BY DEFAULT</span></div>
+      <h1 id="heroTitle" data-i18n="heroTitle">Plan and transfer media as complete directory units.</h1>
+      <p data-i18n="heroText">Every eligible directory runs through rclone as one auditable operation, with partial outcomes kept visible.</p>
     </section>
 
-    <section class="safety-banner" aria-label="Safety status">
+    <section class="safety-banner" aria-label="Safety status" data-i18n-aria-label="safetyStatus">
       <div class="safety-icon" aria-hidden="true">◇</div>
       <div><strong id="safetyTitle" data-i18n="safetyTitle">Protected launch mode</strong><p id="safetyText" data-i18n="safetyText">New jobs start as dry runs. Existing destinations fail closed unless immutable merge is explicitly selected.</p></div>
       <span class="safety-pill" id="safetyPill" data-i18n="sourcePreserved">SOURCE PRESERVED</span>
     </section>
 
-    <section class="metrics" id="stats" aria-label="Dashboard metrics">
-      <article class="metric skeleton"></article><article class="metric skeleton"></article><article class="metric skeleton"></article><article class="metric skeleton"></article>
+    <section class="metrics" id="stats" aria-label="Dashboard metrics" data-i18n-aria-label="dashboardMetrics" aria-busy="true">
+      <article class="metric skeleton" aria-hidden="true"></article><article class="metric skeleton" aria-hidden="true"></article><article class="metric skeleton" aria-hidden="true"></article><article class="metric skeleton" aria-hidden="true"></article>
     </section>
 
-    <section class="workspace">
+    <section class="workspace" id="dashboardContent" tabindex="-1">
       <article class="panel jobs-panel">
         <div class="panel-head">
-          <div><span class="section-kicker" data-i18n="orchestration">ORCHESTRATION</span><h2 data-i18n="syncJobs">Sync jobs</h2></div>
+          <div><span class="section-kicker" data-i18n="orchestration">ORCHESTRATION</span><h2 data-i18n="syncJobs">Transfer jobs</h2></div>
           <button class="text-button" id="refreshButton" type="button"><span aria-hidden="true">↻</span><span data-i18n="refresh">Refresh</span></button>
         </div>
         <div class="job-list" id="jobs" aria-live="polite"><div class="empty-state"><span class="loader"></span><p data-i18n="loadingJobs">Loading jobs…</p></div></div>
@@ -61,7 +57,7 @@
       <aside class="panel activity-panel">
         <div class="panel-head">
           <div><span class="section-kicker" data-i18n="auditTrail">AUDIT TRAIL</span><h2 data-i18n="recentRuns">Recent runs</h2></div>
-          <span class="live-indicator"><i></i><span data-i18n="live">LIVE</span></span>
+          <span class="live-indicator reconnecting" id="liveStatus"><i></i><span data-i18n="reconnecting">RECONNECTING</span></span>
         </div>
         <div class="run-list" id="runs" aria-live="polite"><div class="empty-state compact-state"><p data-i18n="noRuns">No runs recorded yet.</p></div></div>
       </aside>
@@ -70,55 +66,55 @@
     <footer><span>Atomic Sync <b id="version">dev</b></span><span data-i18n="footerText">Deterministic routing · SQLite audit trail · rclone transport</span></footer>
   </main>
 
-  <dialog id="jobDialog" class="dialog wide-dialog">
+  <dialog id="jobDialog" class="dialog wide-dialog" aria-labelledby="jobDialogTitle">
     <form id="jobForm" method="dialog">
-      <div class="dialog-head"><div><span class="section-kicker" data-i18n="jobConfig">JOB CONFIGURATION</span><h2 id="jobDialogTitle" data-i18n="createJob">Create a sync job</h2></div><button class="close-button" type="button" data-close="jobDialog" aria-label="Close">×</button></div>
+      <div class="dialog-head"><div><span class="section-kicker" data-i18n="jobConfig">JOB CONFIGURATION</span><h2 id="jobDialogTitle" data-i18n="createJob">Create a transfer job</h2></div><button class="close-button" type="button" data-close="jobDialog" aria-label="Close" data-i18n-aria-label="close">×</button></div>
       <input type="hidden" name="id">
       <div class="form-grid">
-        <label class="field span-2"><span data-i18n="jobName">Job name</span><input name="name" required maxlength="128" autocomplete="off" placeholder="Archive stable movies"></label>
-        <label class="field span-2"><span data-i18n="source">Source</span><input name="source" required autocomplete="off" placeholder="/sources/storagebox/movies"><small data-i18n="sourceHint">Use a read-only absolute path below /sources.</small></label>
-        <label class="field"><span data-i18n="destinationName">Destination ID</span><input name="destinationName" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" value="gd-primary"></label>
+        <label class="field span-2"><span data-i18n="jobName">Job name</span><input name="name" required maxlength="128" autocomplete="off" placeholder="Archive stable movies" data-i18n-placeholder="jobNamePlaceholder"></label>
+        <label class="field span-2"><span data-i18n="source">Source</span><input name="source" required autocomplete="off" placeholder="/sources/media/movies"><small data-i18n="sourceHint">Use an absolute path below /sources. Move mode requires an explicitly writable source mount.</small></label>
+        <label class="field"><span data-i18n="destinationName">Destination ID</span><input name="destinationName" required pattern="[A-Za-z0-9][A-Za-z0-9._\x2D]{0,63}" value="gd-primary"></label>
         <label class="field"><span data-i18n="destinationPath">Destination path</span><input name="destinationPath" required autocomplete="off" placeholder="GD:data/media/movies"></label>
-        <label class="field"><span data-i18n="mode">Mode</span><select name="mode"><option value="copy" data-i18n="copyMode">Verified copy · source always preserved</option></select></label>
+        <label class="field"><span data-i18n="mode">Mode</span><select name="mode"><option value="copy" data-i18n="copyMode">Copy · preserve source</option><option value="move" data-i18n="moveMode">Direct rclone move · remove transferred source files</option></select></label>
         <label class="field"><span data-i18n="grouping">Atomic unit</span><select name="grouping"><option value="folder" data-i18n="folderUnit">Top-level folder</option><option value="show" data-i18n="showUnit">Complete show</option><option value="season" data-i18n="seasonUnit">Season</option><option value="depth" data-i18n="depthUnit">Path depth</option></select></label>
         <label class="field"><span data-i18n="conflictPolicy">Existing destination</span><select name="conflictPolicy"><option value="fail" data-i18n="failClosed">Fail closed (recommended)</option><option value="merge-immutable" data-i18n="immutableMerge">Immutable merge · never overwrite</option></select></label>
-        <label class="field"><span data-i18n="verify">Verification</span><select name="verify"><option value="checksum" data-i18n="checksum">Full content · downloads both sides</option><option value="size" data-i18n="sizeOnly">Size only · metadata</option></select></label>
+        <label class="field"><span data-i18n="verify">Verification</span><select name="verify"><option value="checksum" data-i18n="checksum">Native hash when available</option><option value="size" data-i18n="sizeOnly">Size only · metadata</option></select></label>
         <label class="field"><span data-i18n="settleSeconds">Stable window (seconds)</span><input name="settleSeconds" type="number" min="0" max="315360000" value="2592000"></label>
         <label class="field"><span data-i18n="concurrency">Concurrency</span><input name="concurrency" type="number" min="1" max="8" value="2"></label>
         <label class="field"><span data-i18n="depth">Depth</span><input name="depth" type="number" min="1" max="32" value="1"></label>
-        <label class="field"><span data-i18n="schedule">Schedule</span><input name="schedule" autocomplete="off" placeholder="Reserved for a future release" disabled></label>
+        <label class="field"><span data-i18n="schedule">Schedule</span><input name="schedule" autocomplete="off" placeholder="Reserved for a future release" data-i18n-placeholder="schedulePlaceholder" disabled></label>
       </div>
       <div class="switch-stack">
-        <label class="switch-row"><input name="dryRun" type="checkbox" checked><span class="switch"></span><span><strong data-i18n="dryRun">Dry run</strong><small data-i18n="dryRunHint">Discover and plan units without touching any file.</small></span></label>
+        <label class="switch-row"><input name="dryRun" type="checkbox" checked><span class="switch"></span><span><strong data-i18n="dryRun">Dry run</strong><small data-i18n="dryRunHint">Run the real rclone plan without changing source or destination media objects. OAuth tokens may refresh.</small></span></label>
         <label class="switch-row"><input name="paused" type="checkbox"><span class="switch"></span><span><strong data-i18n="paused">Paused</strong><small data-i18n="pausedHint">Save the job but prevent manual execution.</small></span></label>
       </div>
       <div class="dialog-actions"><button class="button secondary" type="button" data-close="jobDialog" data-i18n="cancel">Cancel</button><button class="button primary" type="submit" id="saveJobButton" data-i18n="saveJob">Save job</button></div>
     </form>
   </dialog>
 
-  <dialog id="authDialog" class="dialog auth-dialog">
+  <dialog id="authDialog" class="dialog auth-dialog" aria-labelledby="unlockTitle" aria-describedby="unlockText">
     <form id="authForm" method="dialog">
       <div class="auth-mark"><img src="/logo.svg" width="56" height="56" alt=""></div>
-      <h2 data-i18n="unlockTitle">Unlock the control plane</h2>
-      <p data-i18n="unlockText">Enter the API token configured on this server. It remains in this browser tab only.</p>
+      <h2 id="unlockTitle" data-i18n="unlockTitle">Unlock the control plane</h2>
+      <p id="unlockText" data-i18n="unlockText">Enter the API token configured on this server. It remains in this browser tab only.</p>
       <label class="field"><span data-i18n="apiToken">API token</span><input name="token" type="password" required autocomplete="current-password" spellcheck="false"></label>
       <div class="dialog-actions auth-actions"><button class="button secondary" id="forgetTokenButton" type="button" data-i18n="forgetToken">Forget token</button><button class="button primary" type="submit" data-i18n="unlock">Unlock</button></div>
     </form>
   </dialog>
 
-  <dialog id="runDialog" class="dialog confirm-dialog">
+  <dialog id="runDialog" class="dialog confirm-dialog" aria-labelledby="runDialogTitle" aria-describedby="runSummary">
     <form id="runForm" method="dialog">
       <div class="warning-mark" aria-hidden="true">!</div>
-      <h2 data-i18n="confirmRun">Confirm execution</h2>
+      <h2 id="runDialogTitle" data-i18n="confirmRun">Confirm execution</h2>
       <p id="runSummary"></p>
-      <div class="danger-confirm" id="dangerConfirm"><label class="field"><span data-i18n="typeJobName">Type the job name to authorize a write run</span><input name="confirmation" autocomplete="off"></label></div>
-      <div class="dialog-actions"><button class="button secondary" type="button" data-close="runDialog" data-i18n="cancel">Cancel</button><button class="button danger" type="submit" data-i18n="runNow">Run now</button></div>
+      <div class="danger-confirm" id="dangerConfirm"><label class="field"><span id="confirmationLabel" data-i18n="typeMoveJobName">Type the exact job name to authorize source removal</span><input name="confirmation" autocomplete="off" aria-describedby="runSummary confirmationError"><small class="field-error" id="confirmationError" role="alert" data-i18n="invalidConfirmation" hidden>The job name does not match.</small></label></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close="runDialog" data-i18n="cancel">Cancel</button><button class="button danger" id="runSubmitButton" type="submit" data-i18n="runNow">Run now</button></div>
     </form>
   </dialog>
 
   <dialog id="analysisDialog" class="dialog wide-dialog analysis-dialog" aria-labelledby="analysisTitle" aria-describedby="analysisNote">
     <div class="analysis-content">
-      <div class="dialog-head"><div><span class="section-kicker" data-i18n="branchAnalysis">PHYSICAL BRANCH ANALYSIS</span><h2 id="analysisTitle" data-i18n="archiveStatus">Archive status</h2></div><button class="close-button" type="button" data-close="analysisDialog" aria-label="Close">×</button></div>
+      <div class="dialog-head"><div><span class="section-kicker" data-i18n="branchAnalysis">PHYSICAL BRANCH ANALYSIS</span><h2 id="analysisTitle" data-i18n="archiveStatus">Archive status</h2></div><button class="close-button" type="button" data-close="analysisDialog" aria-label="Close" data-i18n-aria-label="close">×</button></div>
       <p class="analysis-note" id="analysisNote" data-i18n="analysisNote">A mergerfs folder name is not archive evidence. This read-only snapshot compares relative file paths and sizes on the mounted physical source and its assigned physical destination. Cleanup still requires final verification.</p>
       <p class="analysis-context" id="analysisContext"></p>
       <div class="analysis-summary" id="analysisSummary" aria-labelledby="analysisTitle"></div>
@@ -129,7 +125,7 @@
           <li><span class="analysis-status conflict" data-i18n="analysis_conflict">conflict</span><span data-i18n="meaning_conflict">A shared path has a different size, one branch has a file where the other has a directory, or content appears outside its assigned destination branch. Manual review is required.</span></li>
           <li><span class="analysis-status partial" data-i18n="analysis_partial">partially archived</span><span data-i18n="meaning_partial">The destination contains unit content, but one or more source paths are missing there. The two branches may be fully disjoint or partly scattered; do not clean the source.</span></li>
           <li><span class="analysis-status pending" data-i18n="analysis_pending">not started</span><span data-i18n="meaning_pending">The physical source contains files and the assigned destination contains none. Archiving has not started for this unit.</span></li>
-          <li><span class="analysis-status ready-to-verify" data-i18n="analysis_ready_to_verify">ready to verify</span><span data-i18n="meaning_ready_to_verify">Every source file path exists at the destination with the same size, but source files remain. Run final checksum or size verification before cleanup.</span></li>
+          <li><span class="analysis-status ready-to-verify" data-i18n="analysis_ready_to_verify">ready to verify</span><span data-i18n="meaning_ready_to_verify">Every source path exists at the destination with the same size, but source files remain. Require independent content proof before cleanup; size-only matching is not deletion authorization.</span></li>
           <li><span class="analysis-status archived" data-i18n="analysis_archived">archived</span><span data-i18n="meaning_archived">The destination contains files and the physical source contains none. An empty source directory shell may remain; mount health must still be confirmed.</span></li>
           <li><span class="analysis-status empty" data-i18n="analysis_empty">empty</span><span data-i18n="meaning_empty">Neither physical branch contains files for this unit. One or both directory shells may still exist.</span></li>
         </ul>

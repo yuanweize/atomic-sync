@@ -161,7 +161,7 @@ func (s *Store) Transition(ctx context.Context, id, to, msg string) error {
 }
 
 // FailInterruptedRuns reconciles records left non-terminal by a previous
-// process crash or forced shutdown. Staging data is deliberately preserved.
+// process crash or forced shutdown. Direct rclone transfers are not rolled back.
 func (s *Store) FailInterruptedRuns(ctx context.Context, message string) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := s.db.ExecContext(ctx, `UPDATE runs SET state='failed',message=?,finished_at=? WHERE state NOT IN ('completed','failed')`, message, now)

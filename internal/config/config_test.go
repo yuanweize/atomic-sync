@@ -53,3 +53,10 @@ func TestInvalidConcurrencyFallsBack(t *testing.T) {
 		t.Fatalf("got %d, want fallback 2", got)
 	}
 }
+
+func TestTPSLimitCanBeDisabled(t *testing.T) {
+	t.Setenv("ATOMIC_RCLONE_TPS_LIMIT", "0")
+	if got := Load().RcloneTPSLimit; got != 0 {
+		t.Fatalf("got %d, want disabled TPS limit", got)
+	}
+}

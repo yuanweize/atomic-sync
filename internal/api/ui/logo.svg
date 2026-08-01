@@ -4,5 +4,5 @@
   <circle cx="32" cy="32" r="18" fill="none" stroke="url(#g)" stroke-width="2.5" stroke-dasharray="22 8" transform="rotate(-28 32 32)"/>
   <ellipse cx="32" cy="32" rx="25" ry="11" fill="none" stroke="url(#g)" stroke-width="2" stroke-opacity=".8" transform="rotate(38 32 32)"/>
   <circle cx="48" cy="18" r="3.2" fill="#8B7CFF"/><circle cx="16" cy="42" r="2.8" fill="#24D6B6"/>
-  <circle cx="32" cy="32" r="9" fill="url(#g)" opacity=".28" filter="url(#s)"/><path d="M23 33.5h14.2l-4.1-4.1 2.8-2.8L45 35.7l-9.1 9.1-2.8-2.8 4.5-4.5H23z" fill="url(#g)"/><path d="M41 30.5H26.8l4.1-4.1-2.8-2.8-9.1 9.1 9.1 9.1 2.8-2.8-4.5-4.5H41z" fill="#F4F1FF" fill-opacity=".9"/>
+  <circle cx="32" cy="32" r="9" fill="url(#g)" opacity=".28" filter="url(#s)"/><path d="M18 29h19l-5-5 3.8-3.8L47.6 32 35.8 43.8 32 40l5.6-5.6H18z" fill="url(#g)"/>
 </svg>

@@ -19,17 +19,16 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
     -ldflags="-s -w -X github.com/yuanweize/atomic-sync/internal/buildinfo.Version=$VERSION -X github.com/yuanweize/atomic-sync/internal/buildinfo.Commit=$COMMIT -X github.com/yuanweize/atomic-sync/internal/buildinfo.Date=$BUILD_DATE" \
     -o /out/atomic-sync ./cmd/atomic-sync
 
-# rclone 1.74.4 is the current upstream release, but its published binary was
-# built before fixes for CVE-2026-56852 and GHSA-hrxh-6v49-42gf landed. Build
-# the same release from source with only those security-fixed dependencies
-# lifted, so the runtime image does not have to waive known HIGH findings.
+# Build the current rclone release from source with the two transfer backends
+# and commands Atomic Sync actually uses. Explicit dependency floors retain
+# fixes for CVE-2026-56852 and GHSA-hrxh-6v49-42gf.
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS rclone-build
 WORKDIR /src
 ENV GOPROXY=https://proxy.golang.org|direct \
     GOTOOLCHAIN=local
 ARG TARGETOS
 ARG TARGETARCH
-ARG RCLONE_VERSION=v1.74.4
+ARG RCLONE_VERSION=v1.75.0
 COPY build/rclone-main.go.in ./main.go
 RUN go mod init atomic-sync-rclone \
     && go mod edit -require=github.com/rclone/rclone@$RCLONE_VERSION \

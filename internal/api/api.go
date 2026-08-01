@@ -30,6 +30,14 @@ import (
 
 const maxJSONBody = 1 << 20
 
+const destructiveConfirmationHeader = "X-Atomic-Confirm-Job"
+const defaultSettleSeconds = 30 * 24 * 60 * 60
+
+type jobFieldPresence struct {
+	dryRun       bool
+	settleWindow bool
+}
+
 var (
 	errPlacementLocked = errors.New("placement settings cannot change after units have been assigned; create a new job")
 	errJobOverlap      = errors.New("job paths overlap another configured job")
@@ -102,15 +110,18 @@ func (a *API) jobs(w http.ResponseWriter, r *http.Request) {
 		respond(w, jobs, err)
 		return
 	}
-	job, dryRunProvided, err := decodeJob(w, r)
+	job, provided, err := decodeJob(w, r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	job.ID = newJobID()
 	job.Normalize()
-	if !dryRunProvided {
+	if !provided.dryRun {
 		job.DryRun = true
+	}
+	if !provided.settleWindow {
+		job.SettleSeconds = defaultSettleSeconds
 	}
 	if err = job.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -158,7 +169,7 @@ func (a *API) deleteJob(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func (a *API) updateJob(w http.ResponseWriter, r *http.Request, id string) {
-	job, dryRunProvided, err := decodeJob(w, r)
+	job, provided, err := decodeJob(w, r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -176,8 +187,11 @@ func (a *API) updateJob(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	job.ID, job.CreatedAt = id, current.CreatedAt
 	job.Normalize()
-	if !dryRunProvided {
+	if !provided.dryRun {
 		job.DryRun = current.DryRun
+	}
+	if !provided.settleWindow {
+		job.SettleSeconds = current.SettleSeconds
 	}
 	if err = job.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -237,6 +251,10 @@ func (a *API) run(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	if job.Mode == model.ModeMove && !job.DryRun && !confirmedJobName(r.Header.Get(destructiveConfirmationHeader), job.Name) {
+		writeError(w, http.StatusBadRequest, "move run requires the exact job name in X-Atomic-Confirm-Job")
+		return
+	}
 	if err = a.validateNoJobOverlap(r.Context(), job); err != nil {
 		respond(w, nil, err)
 		return
@@ -246,6 +264,10 @@ func (a *API) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started"})
+}
+
+func confirmedJobName(provided, expected string) bool {
+	return provided != "" && len(provided) == len(expected) && subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }
 
 func (a *API) analyses(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +323,9 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
+	// Commit the stream immediately so the browser can distinguish a live
+	// authenticated connection from a reconnect before the first heartbeat.
+	flusher.Flush()
 	ch, closeSubscription := a.runner.Subscribe()
 	defer closeSubscription()
 	heartbeat := time.NewTicker(15 * time.Second)
@@ -323,32 +348,33 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func decodeJob(w http.ResponseWriter, r *http.Request) (model.Job, bool, error) {
+func decodeJob(w http.ResponseWriter, r *http.Request) (model.Job, jobFieldPresence, error) {
 	if contentType := r.Header.Get("Content-Type"); contentType != "" {
 		mediaType, _, err := mime.ParseMediaType(contentType)
 		if err != nil || mediaType != "application/json" {
-			return model.Job{}, false, errors.New("content type must be application/json")
+			return model.Job{}, jobFieldPresence{}, errors.New("content type must be application/json")
 		}
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBody))
 	if err != nil {
-		return model.Job{}, false, errors.New("request body is too large or unreadable")
+		return model.Job{}, jobFieldPresence{}, errors.New("request body is too large or unreadable")
 	}
 	var fields map[string]json.RawMessage
 	if err = json.Unmarshal(body, &fields); err != nil {
-		return model.Job{}, false, errors.New("invalid JSON")
+		return model.Job{}, jobFieldPresence{}, errors.New("invalid JSON")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var job model.Job
 	if err = decoder.Decode(&job); err != nil {
-		return model.Job{}, false, fmt.Errorf("invalid job: %w", err)
+		return model.Job{}, jobFieldPresence{}, fmt.Errorf("invalid job: %w", err)
 	}
 	if err = decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return model.Job{}, false, errors.New("invalid JSON: multiple values")
+		return model.Job{}, jobFieldPresence{}, errors.New("invalid JSON: multiple values")
 	}
-	_, provided := fields["dryRun"]
-	return job, provided, nil
+	_, dryRunProvided := fields["dryRun"]
+	_, settleWindowProvided := fields["settleSeconds"]
+	return job, jobFieldPresence{dryRun: dryRunProvided, settleWindow: settleWindowProvided}, nil
 }
 
 func (a *API) auth(next http.Handler) http.Handler {

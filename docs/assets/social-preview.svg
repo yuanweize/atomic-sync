@@ -7,8 +7,8 @@
   <ellipse cx="286" cy="320" rx="150" ry="65" fill="none" stroke="url(#g)" stroke-width="10" stroke-opacity=".7" transform="rotate(38 286 320)"/>
   <circle cx="388" cy="228" r="18" fill="#8B7CFF"/><circle cx="184" cy="382" r="16" fill="#24D6B6"/>
   <circle cx="286" cy="320" r="60" fill="url(#g)" opacity=".24" filter="url(#blur)"/>
-  <path d="M221 328h110l-29-29 20-20 62 62-62 62-20-20 31-31H221z" fill="url(#g)"/><path d="M351 312H241l29-29-20-20-62 62 62 62 20-20-31-31h112z" fill="#F6F7FB" fill-opacity=".9"/>
-  <text x="500" y="291" fill="#F6F7FB" font-family="Inter,Arial,sans-serif" font-size="92" font-weight="780" letter-spacing="-5">Atomic Sync</text>
+  <path d="M203 298h122l-32-32 22-22 72 72-72 72-22-22 34-34H203z" fill="url(#g)"/>
+  <text x="500" y="291" fill="#F6F7FB" font-family="Inter,Arial,sans-serif" font-size="92" font-weight="780" letter-spacing="0">Atomic Sync</text>
   <text x="506" y="355" fill="#B6BDD0" font-family="Inter,Arial,sans-serif" font-size="29" font-weight="560">Branch-aware media archive orchestration</text>
-  <text x="508" y="416" fill="#8174F8" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="800" letter-spacing="5">STAGE · VERIFY · PUBLISH</text>
+  <text x="508" y="416" fill="#8174F8" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="800" letter-spacing="0">PLAN · TRANSFER · AUDIT</text>
 </svg>

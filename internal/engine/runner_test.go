@@ -59,8 +59,21 @@ func runnerJob() model.Job {
 }
 
 func listing() []byte {
-	modified := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
-	return []byte(`[{"Path":"Movie/file.mkv","ModTime":"` + modified + `","IsDir":false}]`)
+	return []byte(`[
+	  {"Path":"Movie","ModTime":"2026-01-01T00:00:00Z","Size":-1,"IsDir":true},
+	  {"Path":"Movie/Extras","ModTime":"2026-01-01T00:00:00Z","Size":-1,"IsDir":true},
+	  {"Path":"Movie/file.mkv","ModTime":"2026-01-01T00:00:00Z","Size":100,"IsDir":false}
+	]`)
+}
+
+func listingFor(args []string) []byte {
+	if len(args) > 1 && args[0] == "lsjson" && (args[1] == "/sources/media/Movie" || args[1] == "GD:data/media/Movie") {
+		return []byte(`[
+		  {"Path":"Extras","ModTime":"2026-01-01T00:00:00Z","Size":-1,"IsDir":true},
+		  {"Path":"file.mkv","ModTime":"2026-01-01T00:00:00Z","Size":100,"IsDir":false}
+		]`)
+	}
+	return listing()
 }
 
 func TestRunnerDryRunDoesNotWrite(t *testing.T) {
@@ -69,10 +82,20 @@ func TestRunnerDryRunDoesNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
-		if args[0] != "lsjson" {
-			t.Fatalf("dry run executed %q", args[0])
+		switch args[0] {
+		case "lsjson":
+			return listingFor(args), nil
+		case "lsf":
+			return []byte("directory not found"), errors.New("exit status 3")
+		case "copy":
+			if !contains(args, "--dry-run") {
+				t.Fatalf("copy dry run omitted --dry-run: %#v", args)
+			}
+			return nil, nil
+		default:
+			t.Fatalf("unexpected dry-run command %q", args[0])
 		}
-		return listing(), nil
+		return nil, nil
 	}}
 	runner := New(database, "rclone", 2)
 	runner.execute = fake.execute
@@ -82,18 +105,51 @@ func TestRunnerDryRunDoesNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs, err := database.Runs(context.Background(), 10)
-	if err != nil || len(runs) != 1 || runs[0].State != "completed" || !strings.Contains(runs[0].Message, "no changes") {
+	if err != nil || len(runs) != 1 || runs[0].State != "completed" || !strings.Contains(runs[0].Message, "no source or destination media objects changed") {
 		t.Fatalf("unexpected dry run: %#v err=%v", runs, err)
 	}
-	if len(fake.snapshot()) != 1 {
-		t.Fatalf("unexpected commands: %#v", fake.snapshot())
+	if calls := fake.snapshot(); countCommand(calls, "copy") != 1 || countCommand(calls, "lsf") != 1 || countCommand(calls, "lsjson") != 2 {
+		t.Fatalf("dry run did not exercise the real rclone plan: %#v", calls)
 	}
 	if _, err = database.Analysis(context.Background(), job.ID); err != nil {
 		t.Fatalf("dry run invalidated branch analysis: %v", err)
 	}
 }
 
-func TestRunnerCopyPublishesOnlyToEmptyDestination(t *testing.T) {
+func TestRunnerMoveDryRunDoesNotWrite(t *testing.T) {
+	database := runnerStore(t)
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch args[0] {
+		case "lsjson":
+			return listingFor(args), nil
+		case "lsf":
+			return []byte("directory not found"), errors.New("exit status 3")
+		case "move":
+			if !contains(args, "--dry-run") || !contains(args, "--size-only") {
+				t.Fatalf("move dry run omitted required flags: %#v", args)
+			}
+			return nil, nil
+		default:
+			t.Fatalf("unexpected move dry-run command %q", args[0])
+		}
+		return nil, nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.Mode = model.ModeMove
+	job.DeleteSource = true
+	job.Verify = "size"
+	job.DryRun = true
+	if err := runner.Run(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if calls := fake.snapshot(); countCommand(calls, "move") != 1 || countCommand(calls, "lsf") != 1 || countCommand(calls, "lsjson") != 2 {
+		t.Fatalf("move dry run did not exercise the real rclone plan: %#v", calls)
+	}
+}
+
+func TestRunnerCopyPreflightsEmptyDestinationAndUsesRcloneCopy(t *testing.T) {
 	database := runnerStore(t)
 	if err := database.SaveAnalysis(context.Background(), model.Analysis{JobID: "job_runner", State: "completed", Summary: map[string]int{}}); err != nil {
 		t.Fatal(err)
@@ -101,7 +157,7 @@ func TestRunnerCopyPublishesOnlyToEmptyDestination(t *testing.T) {
 	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
 		switch args[0] {
 		case "lsjson":
-			return listing(), nil
+			return listingFor(args), nil
 		case "lsf":
 			return []byte("directory not found"), errors.New("exit status 3")
 		default:
@@ -115,14 +171,124 @@ func TestRunnerCopyPublishesOnlyToEmptyDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := fake.snapshot()
-	if countCommand(calls, "copy") != 1 || countCommand(calls, "check") != 2 || countCommand(calls, "moveto") != 1 {
-		t.Fatalf("unexpected publish sequence: %#v", calls)
+	if countCommand(calls, "lsf") != 1 || countCommand(calls, "copy") != 1 || countCommand(calls, "check") != 0 || countCommand(calls, "move") != 0 {
+		t.Fatalf("unexpected copy sequence: %#v", calls)
 	}
-	if countCommand(calls, "purge") != 0 {
-		t.Fatalf("copy mode purged data: %#v", calls)
+	for _, call := range calls {
+		if call[0] != "copy" {
+			continue
+		}
+		if len(call) < 3 || call[1] != "/sources/media/Movie" || call[2] != "GD:data/media/Movie" {
+			t.Fatalf("copy did not target the assigned final destination: %#v", call)
+		}
+		for _, flag := range []string{"--immutable", "--checksum", "--create-empty-src-dirs"} {
+			if !contains(call, flag) {
+				t.Fatalf("copy omitted %s: %#v", flag, call)
+			}
+		}
 	}
 	if _, err := database.Analysis(context.Background(), job.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("write run left stale branch analysis: %v", err)
+	}
+}
+
+func TestRunnerMoveUsesRcloneMoveAndDeletesSource(t *testing.T) {
+	database := runnerStore(t)
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch args[0] {
+		case "lsjson":
+			return listingFor(args), nil
+		case "move":
+			for _, flag := range []string{"--immutable", "--checksum", "--ignore-existing", "--delete-empty-src-dirs"} {
+				if !contains(args, flag) {
+					t.Fatalf("rclone move omitted %s: %#v", flag, args)
+				}
+			}
+			if args[1] != "/sources/media/Movie" || args[2] != "GD:data/media/Movie" {
+				t.Fatalf("rclone move was not configured for verified resumable deletion: %#v", args)
+			}
+			if contains(args, "--check-first") {
+				t.Fatalf("rclone move must stream checks and transfers for throughput: %#v", args)
+			}
+			return nil, nil
+		case "lsf":
+			return []byte("directory not found"), errors.New("exit status 3")
+		default:
+			t.Fatalf("unexpected command: %#v", args)
+			return nil, nil
+		}
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.Mode = model.ModeMove
+	job.DeleteSource = true
+	job.ConflictPolicy = model.ConflictMergeImmutable
+	if err := runner.Run(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.snapshot()
+	if countCommand(calls, "move") != 1 || countCommand(calls, "copy") != 0 || countCommand(calls, "check") != 0 || countCommand(calls, "lsf") != 1 {
+		t.Fatalf("unexpected move sequence: %#v", calls)
+	}
+	runs, err := database.Runs(context.Background(), 10)
+	if err != nil || len(runs) != 1 || runs[0].State != "completed" || !strings.Contains(runs[0].Message, "source files removed by rclone") {
+		t.Fatalf("move completion was not audited: %#v err=%v", runs, err)
+	}
+}
+
+func TestRunnerInterruptedMoveCanResumeWithImmutableMerge(t *testing.T) {
+	database := runnerStore(t)
+	moveAttempts := 0
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch args[0] {
+		case "lsjson":
+			return listingFor(args), nil
+		case "move":
+			moveAttempts++
+			for _, flag := range []string{"--immutable", "--checksum", "--ignore-existing", "--delete-empty-src-dirs"} {
+				if !contains(args, flag) {
+					t.Fatalf("resumable move omitted %s: %#v", flag, args)
+				}
+			}
+			if moveAttempts == 1 {
+				return nil, errors.New("interrupted after partial transfer")
+			}
+			return nil, nil
+		case "lsf":
+			return []byte("directory not found"), errors.New("exit status 3")
+		default:
+			t.Fatalf("unexpected command: %#v", args)
+		}
+		return nil, nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.Mode = model.ModeMove
+	job.DeleteSource = true
+	job.ConflictPolicy = model.ConflictMergeImmutable
+	err := runner.Run(context.Background(), job)
+	if err == nil || !strings.Contains(err.Error(), "source and destination may each contain part") {
+		t.Fatalf("move failure did not explain partial-state recovery: %v", err)
+	}
+	if err := runner.Run(context.Background(), job); err != nil {
+		t.Fatalf("immutable move did not resume after interruption: %v", err)
+	}
+	calls := fake.snapshot()
+	if countCommand(calls, "move") != 2 || countCommand(calls, "copy") != 0 || countCommand(calls, "check") != 0 || countCommand(calls, "lsf") != 1 {
+		t.Fatalf("interrupted move did not retry through the same merge path: %#v", calls)
+	}
+	runs, runsErr := database.Runs(context.Background(), 10)
+	if runsErr != nil || len(runs) != 2 {
+		t.Fatalf("move attempts were not persisted: %#v err=%v", runs, runsErr)
+	}
+	states := map[string]int{}
+	for _, run := range runs {
+		states[run.State]++
+	}
+	if states["failed"] != 1 || states["completed"] != 1 {
+		t.Fatalf("interrupted and resumed move states were not audited: %#v", runs)
 	}
 }
 
@@ -130,7 +296,7 @@ func TestRunnerConflictFailsClosedAndPreservesSource(t *testing.T) {
 	database := runnerStore(t)
 	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
 		if args[0] == "lsjson" {
-			return listing(), nil
+			return listingFor(args), nil
 		}
 		if args[0] == "lsf" {
 			return []byte("existing.mkv\n"), nil
@@ -144,8 +310,8 @@ func TestRunnerConflictFailsClosedAndPreservesSource(t *testing.T) {
 		t.Fatalf("expected destination conflict, got %v", err)
 	}
 	calls := fake.snapshot()
-	if countCommand(calls, "moveto") != 0 || countCommand(calls, "purge") != 0 {
-		t.Fatalf("conflict changed data: %#v", calls)
+	if countCommand(calls, "lsf") != 1 || countCommand(calls, "copy") != 0 || countCommand(calls, "move") != 0 || countCommand(calls, "check") != 0 {
+		t.Fatalf("conflict changed data or skipped the preflight: %#v", calls)
 	}
 	runs, _ := database.Runs(context.Background(), 10)
 	if len(runs) != 1 || runs[0].State != "failed" {
@@ -153,11 +319,11 @@ func TestRunnerConflictFailsClosedAndPreservesSource(t *testing.T) {
 	}
 }
 
-func TestRunnerImmutableMergeRetainsSourceAndStaging(t *testing.T) {
+func TestRunnerImmutableMergeCopiesDirectlyAndPreservesSource(t *testing.T) {
 	database := runnerStore(t)
 	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
 		if args[0] == "lsjson" {
-			return listing(), nil
+			return listingFor(args), nil
 		}
 		return nil, nil
 	}}
@@ -169,29 +335,23 @@ func TestRunnerImmutableMergeRetainsSourceAndStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := fake.snapshot()
-	if countCommand(calls, "copy") != 2 || countCommand(calls, "check") != 3 || countCommand(calls, "purge") != 0 {
+	if countCommand(calls, "copy") != 1 || countCommand(calls, "check") != 0 || countCommand(calls, "move") != 0 || countCommand(calls, "lsf") != 0 {
 		t.Fatalf("unexpected immutable merge sequence: %#v", calls)
 	}
 	var immutable bool
-	checkIndex := 0
 	for _, call := range calls {
 		if call[0] == "copy" && contains(call, "--immutable") {
 			immutable = true
+			if call[1] != "/sources/media/Movie" || call[2] != "GD:data/media/Movie" {
+				t.Fatalf("immutable merge did not copy directly to the final destination: %#v", call)
+			}
 		}
-		if call[0] == "check" {
-			if !contains(call, "--quiet") {
-				t.Fatalf("routine successful check notices were not suppressed: %#v", call)
+		if call[0] == "copy" {
+			for _, flag := range []string{"--immutable", "--checksum", "--create-empty-src-dirs"} {
+				if !contains(call, flag) {
+					t.Fatalf("immutable copy omitted %s: %#v", flag, call)
+				}
 			}
-			if !contains(call, "--download") {
-				t.Fatalf("content verification did not use --download: %#v", call)
-			}
-			if checkIndex == 0 && contains(call, "--one-way") {
-				t.Fatalf("fresh staging verification allowed extra files: %#v", call)
-			}
-			if checkIndex > 0 && !contains(call, "--one-way") {
-				t.Fatalf("immutable destination verification rejected permitted extras: %#v", call)
-			}
-			checkIndex++
 		}
 	}
 	if !immutable {
@@ -199,33 +359,32 @@ func TestRunnerImmutableMergeRetainsSourceAndStaging(t *testing.T) {
 	}
 }
 
-func TestRunnerVerificationFailuresPreserveSource(t *testing.T) {
+func TestRunnerTransferFailuresAreAudited(t *testing.T) {
 	tests := []struct {
 		name           string
+		mode           string
 		policy         string
-		failCheck      int
-		wantMoveTo     int
+		failCommand    string
 		wantCopy       int
+		wantMove       int
 		wantErrorMatch string
 	}{
-		{name: "fresh staging", policy: model.ConflictFail, failCheck: 1, wantCopy: 1, wantErrorMatch: "injected verification failure"},
-		{name: "new destination final", policy: model.ConflictFail, failCheck: 2, wantMoveTo: 1, wantCopy: 1, wantErrorMatch: "source preserved"},
-		{name: "immutable merge", policy: model.ConflictMergeImmutable, failCheck: 2, wantCopy: 2, wantErrorMatch: "immutable merge verification failed"},
+		{name: "copy transfer", mode: model.ModeCopy, policy: model.ConflictFail, failCommand: "copy", wantCopy: 1, wantErrorMatch: "rclone copy failed; source preserved"},
+		{name: "immutable copy transfer", mode: model.ModeCopy, policy: model.ConflictMergeImmutable, failCommand: "copy", wantCopy: 1, wantErrorMatch: "rclone copy failed; source preserved"},
+		{name: "move transfer", mode: model.ModeMove, policy: model.ConflictMergeImmutable, failCommand: "move", wantMove: 1, wantErrorMatch: "rclone move failed; source and destination may each contain part"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			database := runnerStore(t)
-			checks := 0
 			fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
 				switch args[0] {
 				case "lsjson":
-					return listing(), nil
+					return listingFor(args), nil
 				case "lsf":
 					return []byte("directory not found"), errors.New("exit status 3")
-				case "check":
-					checks++
-					if checks == test.failCheck {
-						return nil, errors.New("injected verification failure")
+				case "copy", "move":
+					if args[0] == test.failCommand {
+						return nil, errors.New("injected transfer failure")
 					}
 				}
 				return nil, nil
@@ -233,17 +392,16 @@ func TestRunnerVerificationFailuresPreserveSource(t *testing.T) {
 			runner := New(database, "rclone", 1)
 			runner.execute = fake.execute
 			job := runnerJob()
+			job.Mode = test.mode
+			job.DeleteSource = test.mode == model.ModeMove
 			job.ConflictPolicy = test.policy
 			err := runner.Run(context.Background(), job)
 			if err == nil || !strings.Contains(err.Error(), test.wantErrorMatch) {
 				t.Fatalf("unexpected failure result: %v", err)
 			}
 			calls := fake.snapshot()
-			if countCommand(calls, "copy") != test.wantCopy || countCommand(calls, "moveto") != test.wantMoveTo {
+			if countCommand(calls, "copy") != test.wantCopy || countCommand(calls, "move") != test.wantMove || countCommand(calls, "check") != 0 {
 				t.Fatalf("unexpected commands after failure: %#v", calls)
-			}
-			if countCommand(calls, "purge") != 0 {
-				t.Fatalf("verification failure triggered deletion: %#v", calls)
 			}
 			runs, runsErr := database.Runs(context.Background(), 10)
 			if runsErr != nil || len(runs) != 1 || runs[0].State != "failed" {
@@ -253,11 +411,11 @@ func TestRunnerVerificationFailuresPreserveSource(t *testing.T) {
 	}
 }
 
-func TestRunnerSizeVerificationDoesNotClaimContentCheck(t *testing.T) {
+func TestRunnerMoveFailPolicyUsesRcloneSizeOnly(t *testing.T) {
 	database := runnerStore(t)
 	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
 		if args[0] == "lsjson" {
-			return listing(), nil
+			return listingFor(args), nil
 		}
 		if args[0] == "lsf" {
 			return []byte("directory not found"), errors.New("exit status 3")
@@ -267,17 +425,164 @@ func TestRunnerSizeVerificationDoesNotClaimContentCheck(t *testing.T) {
 	runner := New(database, "rclone", 1)
 	runner.execute = fake.execute
 	job := runnerJob()
+	job.Mode = model.ModeMove
+	job.DeleteSource = true
 	job.Verify = "size"
 	if err := runner.Run(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
-	for _, call := range fake.snapshot() {
-		if call[0] != "check" {
-			continue
-		}
-		if !contains(call, "--size-only") || contains(call, "--download") {
+	calls := fake.snapshot()
+	if countCommand(calls, "move") != 1 || countCommand(calls, "lsf") != 2 {
+		t.Fatalf("fail-closed size verification did not preflight and move once: %#v", calls)
+	}
+	for _, call := range calls {
+		if call[0] == "move" && (!contains(call, "--size-only") || !contains(call, "--ignore-existing") || contains(call, "--checksum")) {
 			t.Fatalf("size verification flags are misleading: %#v", call)
 		}
+	}
+}
+
+func TestRunnerMovePreservesAndReportsExistingDestinationPaths(t *testing.T) {
+	database := runnerStore(t)
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch args[0] {
+		case "lsjson":
+			return listingFor(args), nil
+		case "move":
+			if !contains(args, "--ignore-existing") {
+				t.Fatalf("move could delete a source overlap: %#v", args)
+			}
+			return nil, nil
+		case "lsf":
+			if len(args) < 2 || args[1] != "/sources/media/Movie" || !contains(args, "--files-only") {
+				t.Fatalf("remaining-source check used the wrong path or flags: %#v", args)
+			}
+			return []byte("file.mkv\n"), nil
+		default:
+			t.Fatalf("unexpected command: %#v", args)
+			return nil, nil
+		}
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.Mode = model.ModeMove
+	job.DeleteSource = true
+	job.ConflictPolicy = model.ConflictMergeImmutable
+	err := runner.Run(context.Background(), job)
+	if err == nil || !strings.Contains(err.Error(), "preserved source files") || !strings.Contains(err.Error(), "unit is partial") {
+		t.Fatalf("source overlap was not reported as partial: %v", err)
+	}
+	runs, runsErr := database.Runs(context.Background(), 10)
+	if runsErr != nil || len(runs) != 1 || runs[0].State != "failed" {
+		t.Fatalf("partial move was not persisted as failed: %#v err=%v", runs, runsErr)
+	}
+}
+
+func TestRunnerMoveCannotCompleteWithMissingDestinationFile(t *testing.T) {
+	database := runnerStore(t)
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch args[0] {
+		case "lsjson":
+			if len(args) > 1 && args[1] == "GD:data/media/Movie" {
+				return []byte(`[]`), nil
+			}
+			return listingFor(args), nil
+		case "move":
+			return nil, nil
+		case "lsf":
+			t.Fatalf("remaining-source check ran before destination completeness was proven: %#v", args)
+		default:
+			t.Fatalf("unexpected command: %#v", args)
+		}
+		return nil, nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.Mode = model.ModeMove
+	job.DeleteSource = true
+	job.ConflictPolicy = model.ConflictMergeImmutable
+	err := runner.Run(context.Background(), job)
+	if err == nil || !strings.Contains(err.Error(), `destination is missing discovered file "file.mkv"`) || !strings.Contains(err.Error(), "unit as partial") {
+		t.Fatalf("incomplete destination was not reported as partial: %v", err)
+	}
+	runs, runsErr := database.Runs(context.Background(), 10)
+	if runsErr != nil || len(runs) != 1 || runs[0].State != "failed" {
+		t.Fatalf("incomplete destination was not persisted as failed: %#v err=%v", runs, runsErr)
+	}
+}
+
+func TestRunnerChecksumVerificationUsesBackendHashes(t *testing.T) {
+	database := runnerStore(t)
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] == "lsjson" {
+			return listingFor(args), nil
+		}
+		if args[0] == "lsf" {
+			return []byte("directory not found"), errors.New("exit status 3")
+		}
+		return nil, nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	if err := runner.Run(context.Background(), runnerJob()); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.snapshot()
+	if countCommand(calls, "copy") != 1 {
+		t.Fatalf("checksum verification did not execute one copy: %#v", calls)
+	}
+	for _, call := range calls {
+		if call[0] == "copy" && (!contains(call, "--checksum") || contains(call, "--size-only")) {
+			t.Fatalf("checksum verification bypassed rclone's native backend hashes: %#v", call)
+		}
+	}
+}
+
+func TestRunnerPinsTransferManifestAndStableAge(t *testing.T) {
+	database := runnerStore(t)
+	var manifest string
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch args[0] {
+		case "lsjson":
+			return listingFor(args), nil
+		case "copy":
+			index := indexOf(args, "--files-from-raw")
+			if index < 0 || index+1 >= len(args) {
+				t.Fatalf("copy did not pin the discovered file set: %#v", args)
+			}
+			manifest = args[index+1]
+			contents, err := os.ReadFile(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(contents) != "file.mkv\n" {
+				t.Fatalf("transfer manifest = %q, want one discovered file", contents)
+			}
+			age := indexOf(args, "--min-age")
+			if age < 0 || age+1 >= len(args) || args[age+1] != "86400s" {
+				t.Fatalf("copy did not enforce the stable window at transfer time: %#v", args)
+			}
+			return nil, nil
+		default:
+			t.Fatalf("unexpected command: %#v", args)
+		}
+		return nil, nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.ConflictPolicy = model.ConflictMergeImmutable
+	job.SettleSeconds = 24 * 60 * 60
+	if err := runner.Run(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if manifest == "" {
+		t.Fatal("copy never exposed a transfer manifest")
+	}
+	if _, err := os.Stat(manifest); !os.IsNotExist(err) {
+		t.Fatalf("transfer manifest was not removed: %v", err)
 	}
 }
 
@@ -290,8 +595,22 @@ func TestRunnerAppliesConservativeRcloneLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := fake.snapshot()
-	if len(calls) != 1 || !containsPair(calls[0], "--transfers", "3") || !containsPair(calls[0], "--checkers", "4") || !containsPair(calls[0], "--tpslimit", "5") || !containsPair(calls[0], "--tpslimit-burst", "1") {
+	if len(calls) != 1 || !containsPair(calls[0], "--transfers", "3") || !containsPair(calls[0], "--checkers", "4") || !containsPair(calls[0], "--tpslimit", "5") || !containsPair(calls[0], "--tpslimit-burst", "5") {
 		t.Fatalf("rclone limits missing from argv: %#v", calls)
+	}
+}
+
+func TestRunnerCanDisableTPSLimit(t *testing.T) {
+	database := runnerStore(t)
+	fake := &fakeExecutor{fn: func(_ context.Context, _ []string) ([]byte, error) { return nil, nil }}
+	runner := NewWithLimits(database, "rclone", 1, 3, 4, 0)
+	runner.execute = fake.execute
+	if _, err := runner.command(context.Background(), "version"); err != nil {
+		t.Fatal(err)
+	}
+	call := fake.snapshot()[0]
+	if contains(call, "--tpslimit") || contains(call, "--tpslimit-burst") {
+		t.Fatalf("disabled TPS limit remained in argv: %#v", call)
 	}
 }
 
@@ -361,13 +680,13 @@ func TestRunnerRejectsInvalidPersistedJobAtExecutionBoundary(t *testing.T) {
 	job := runnerJob()
 	job.Mode = "move"
 
-	if err := runner.Run(context.Background(), job); err == nil || !strings.Contains(err.Error(), "mode must be copy") {
+	if err := runner.Run(context.Background(), job); err == nil || !strings.Contains(err.Error(), "requires deleteSource=true") {
 		t.Fatalf("synchronous run accepted invalid persisted job: %v", err)
 	}
-	if err := runner.Start(job); err == nil || !strings.Contains(err.Error(), "mode must be copy") {
+	if err := runner.Start(job); err == nil || !strings.Contains(err.Error(), "requires deleteSource=true") {
 		t.Fatalf("asynchronous start accepted invalid persisted job: %v", err)
 	}
-	if err := runner.StartAnalysis(job); err == nil || !strings.Contains(err.Error(), "mode must be copy") {
+	if err := runner.StartAnalysis(job); err == nil || !strings.Contains(err.Error(), "requires deleteSource=true") {
 		t.Fatalf("analysis accepted invalid persisted job: %v", err)
 	}
 	if runner.ActiveCount() != 0 {
@@ -391,9 +710,6 @@ func TestRunnerRejectsShallowAndOverlappingUnitsBeforeWrites(t *testing.T) {
 	}
 	if err := validateIndependentUnits([]string{"Show", "Show/Season 01"}); err == nil || !strings.Contains(err.Error(), "overlapping migration units") {
 		t.Fatalf("ancestor and descendant units were accepted: %v", err)
-	}
-	if err := validateIndependentUnits([]string{".atomic-sync-staging"}); err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("reserved staging unit was accepted: %v", err)
 	}
 }
 
@@ -428,6 +744,165 @@ func TestDiscoverRejectsMalformedModTime(t *testing.T) {
 	}
 }
 
+func TestRunnerRevalidatesStableWindowImmediatelyBeforeTransfer(t *testing.T) {
+	database := runnerStore(t)
+	listings := 0
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		switch args[0] {
+		case "lsjson":
+			listings++
+			if listings == 1 {
+				modified := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
+				return []byte(`[{"Path":"Movie/file.mkv","ModTime":"` + modified + `","IsDir":false}]`), nil
+			}
+			modified := time.Now().UTC().Format(time.RFC3339Nano)
+			return []byte(`[{"Path":"new-episode.mkv","ModTime":"` + modified + `","IsDir":false}]`), nil
+		case "lsf":
+			return []byte("directory not found"), errors.New("exit status 3")
+		default:
+			t.Fatalf("unstable unit reached transfer command: %#v", args)
+		}
+		return nil, nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.SettleSeconds = 24 * 60 * 60
+	if err := runner.Run(context.Background(), job); err == nil || !strings.Contains(err.Error(), "has not satisfied the stable window") {
+		t.Fatalf("new file was not rejected before transfer: %v", err)
+	}
+	if calls := fake.snapshot(); countCommand(calls, "copy") != 0 || countCommand(calls, "move") != 0 {
+		t.Fatalf("unstable unit reached rclone transfer: %#v", calls)
+	}
+}
+
+func TestRunnerRejectsUnitFingerprintChangesBeforeTransfer(t *testing.T) {
+	const initial = `[{"Path":"Movie/file.mkv","ModTime":"2026-01-01T00:00:00Z","Size":100,"IsDir":false}]`
+	tests := []struct {
+		name          string
+		current       func() string
+		settleSeconds int
+		want          string
+	}{
+		{
+			name: "added path",
+			current: func() string {
+				return `[
+				  {"Path":"file.mkv","ModTime":"2026-01-01T00:00:00Z","Size":100,"IsDir":false},
+				  {"Path":"extra.mkv","ModTime":"2026-01-01T00:00:00Z","Size":200,"IsDir":false}
+				]`
+			},
+			want: `added path "extra.mkv"`,
+		},
+		{
+			name:    "deleted path",
+			current: func() string { return `[]` },
+			want:    `deleted path "file.mkv"`,
+		},
+		{
+			name: "size changed",
+			current: func() string {
+				return `[{"Path":"file.mkv","ModTime":"2026-01-01T00:00:00Z","Size":101,"IsDir":false}]`
+			},
+			want: `size changed for path "file.mkv"`,
+		},
+		{
+			name: "modification time changed",
+			current: func() string {
+				return `[{"Path":"file.mkv","ModTime":"2026-01-02T00:00:00Z","Size":100,"IsDir":false}]`
+			},
+			want: `modification time changed for path "file.mkv"`,
+		},
+		{
+			name: "type changed",
+			current: func() string {
+				return `[{"Path":"file.mkv","ModTime":"2026-01-01T00:00:00Z","Size":-1,"IsDir":true}]`
+			},
+			want: `type changed for path "file.mkv"`,
+		},
+		{
+			name: "added young file",
+			current: func() string {
+				modified := time.Now().UTC().Format(time.RFC3339Nano)
+				return `[
+				  {"Path":"file.mkv","ModTime":"2026-01-01T00:00:00Z","Size":100,"IsDir":false},
+				  {"Path":"downloading.mkv","ModTime":"` + modified + `","Size":200,"IsDir":false}
+				]`
+			},
+			settleSeconds: 24 * 60 * 60,
+			want:          `has not satisfied the stable window`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			database := runnerStore(t)
+			listings := 0
+			fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+				if args[0] == "lsf" {
+					return []byte("directory not found"), errors.New("exit status 3")
+				}
+				if args[0] != "lsjson" {
+					t.Fatalf("changed unit reached non-listing rclone command: %#v", args)
+				}
+				listings++
+				if listings == 1 {
+					return []byte(initial), nil
+				}
+				return []byte(test.current()), nil
+			}}
+			runner := New(database, "rclone", 1)
+			runner.execute = fake.execute
+			job := runnerJob()
+			job.Mode = model.ModeMove
+			job.DeleteSource = true
+			job.Verify = "size"
+			job.SettleSeconds = test.settleSeconds
+			err := runner.Run(context.Background(), job)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("fingerprint change returned %v, want %q", err, test.want)
+			}
+			calls := fake.snapshot()
+			if countCommand(calls, "lsjson") != 2 || countCommand(calls, "copy") != 0 || countCommand(calls, "move") != 0 || countCommand(calls, "lsf") != 1 {
+				t.Fatalf("changed unit reached transfer or destination preflight: %#v", calls)
+			}
+		})
+	}
+}
+
+func TestRunnerRejectsReservedSourceNamespace(t *testing.T) {
+	database := runnerStore(t)
+	modified := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] != "lsjson" {
+			t.Fatalf("reserved source reached command: %#v", args)
+		}
+		return []byte(`[{"Path":".atomic-sync-staging/file.mkv","ModTime":"` + modified + `","IsDir":false}]`), nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	if err := runner.Run(context.Background(), runnerJob()); err == nil || !strings.Contains(err.Error(), "reserved Atomic Sync namespace") {
+		t.Fatalf("reserved source namespace was silently ignored: %v", err)
+	}
+}
+
+func TestRunnerRejectsReservedSourceEndpointBeforeListing(t *testing.T) {
+	database := runnerStore(t)
+	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
+		t.Fatalf("reserved source endpoint reached rclone: %#v", args)
+		return nil, nil
+	}}
+	runner := New(database, "rclone", 1)
+	runner.execute = fake.execute
+	job := runnerJob()
+	job.Source = "/sources/media/.atomic-sync-staging/recovery"
+	if err := runner.Run(context.Background(), job); err == nil || !strings.Contains(err.Error(), "reserved .atomic-sync-staging namespace") {
+		t.Fatalf("reserved source endpoint was accepted: %v", err)
+	}
+	if calls := fake.snapshot(); len(calls) != 0 {
+		t.Fatalf("reserved source endpoint invoked rclone: %#v", calls)
+	}
+}
+
 func TestArchiveAnalysisLooksInsideOverlappingFolders(t *testing.T) {
 	database := runnerStore(t)
 	sourceListing := []byte(`[
@@ -454,8 +929,7 @@ func TestArchiveAnalysisLooksInsideOverlappingFolders(t *testing.T) {
 	  {"Path":"ArchivedShell/movie.mkv","Size":300,"IsDir":false},
 	  {"Path":"TypeCollision","Size":-1,"IsDir":true},
 	  {"Path":"Empty","Size":-1,"IsDir":true},
-	  {"Path":"Archived/movie.mkv","Size":300,"IsDir":false},
-	  {"Path":".atomic-sync-staging/job/run/Ghost/file.mkv","Size":999,"IsDir":false}
+	  {"Path":"Archived/movie.mkv","Size":300,"IsDir":false}
     ]`)
 	fake := &fakeExecutor{fn: func(_ context.Context, args []string) ([]byte, error) {
 		if args[0] != "lsjson" {
@@ -516,9 +990,6 @@ func TestArchiveAnalysisLooksInsideOverlappingFolders(t *testing.T) {
 	}
 	if countCommand(fake.snapshot(), "lsjson") != 2 {
 		t.Fatalf("analysis should list each branch once: %#v", fake.snapshot())
-	}
-	if _, exists := statuses[".atomic-sync-staging"]; exists {
-		t.Fatalf("private staging namespace leaked into archive results: %#v", statuses[".atomic-sync-staging"])
 	}
 }
 
@@ -744,18 +1215,6 @@ func TestInventoryRejectsNegativeFileSize(t *testing.T) {
 	}
 }
 
-func TestInventoryRejectsReservedSourceNamespace(t *testing.T) {
-	database := runnerStore(t)
-	fake := &fakeExecutor{fn: func(_ context.Context, _ []string) ([]byte, error) {
-		return []byte(`[{"Path":".atomic-sync-staging/secret.mkv","Size":100,"IsDir":false}]`), nil
-	}}
-	runner := New(database, "rclone", 1)
-	runner.execute = fake.execute
-	if _, err := runner.inventory(context.Background(), "/sources/media", runnerJob()); err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("reserved source namespace was accepted: %v", err)
-	}
-}
-
 func TestInventoryRejectsAmbiguousDuplicateFile(t *testing.T) {
 	database := runnerStore(t)
 	for _, secondSize := range []int{100, 200} {
@@ -911,6 +1370,15 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func indexOf(values []string, wanted string) int {
+	for index, value := range values {
+		if value == wanted {
+			return index
+		}
+	}
+	return -1
 }
 
 func containsPair(values []string, first, second string) bool {

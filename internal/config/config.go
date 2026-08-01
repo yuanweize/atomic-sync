@@ -29,7 +29,7 @@ func Load() Config {
 		MaxConcurrency:  intEnv("ATOMIC_MAX_CONCURRENCY", 2),
 		RcloneTransfers: intEnv("ATOMIC_RCLONE_TRANSFERS", 2),
 		RcloneCheckers:  intEnv("ATOMIC_RCLONE_CHECKERS", 2),
-		RcloneTPSLimit:  intEnv("ATOMIC_RCLONE_TPS_LIMIT", 2),
+		RcloneTPSLimit:  nonNegativeIntEnv("ATOMIC_RCLONE_TPS_LIMIT", 2),
 		LogFormat:       env("ATOMIC_LOG_FORMAT", "json"),
 	}
 }
@@ -67,6 +67,14 @@ func env(key, fallback string) string {
 func intEnv(key string, fallback int) int {
 	value, err := strconv.Atoi(os.Getenv(key))
 	if err != nil || value < 1 || value > 64 {
+		return fallback
+	}
+	return value
+}
+
+func nonNegativeIntEnv(key string, fallback int) int {
+	value, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || value < 0 || value > 64 {
 		return fallback
 	}
 	return value
