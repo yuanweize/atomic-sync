@@ -4,8 +4,8 @@ Atomic Sync is an administrative control plane around rclone. Its security bound
 
 ## Protected assets
 
-- Source media, including files eligible for removal in real `move` mode.
-- Destination media, including destination-only files that Atomic Sync must never prune.
+- Source data, including files eligible for removal in real `move` mode.
+- Destination data, including destination-only files that Atomic Sync must never prune.
 - Rclone credentials, Google OAuth tokens, and remote definitions.
 - SQLite jobs, destination assignments, analyses, and run history.
 - The API token and operational path information returned by protected endpoints.
@@ -39,7 +39,7 @@ These controls reduce accidental execution; they do not make an authorized move 
 
 | Threat | Control |
 |---|---|
-| Unauthenticated write or move | The reference/production deployment authenticates every protected API; only loopback development may omit a token, while non-loopback listeners require at least 32 characters |
+| Unauthenticated write or move | The reference/production deployment authenticates every protected API; only an application process explicitly listening on loopback may omit a token, while a Tailscale IP and every other non-loopback listener require at least 32 characters |
 | Accidental real move | Dry-run default, read-only reference source, exact job-name confirmation, and strict move/delete-source pairing |
 | Destination-only content deleted | No public `sync` mode or destination-pruning path; both operations use copy/move semantics |
 | Source deleted before rclone accepts its transfer | Source removal is delegated to rclone move's successful-transfer semantics rather than a separate application delete loop |
@@ -54,7 +54,7 @@ These controls reduce accidental execution; they do not make an authorized move 
 | Stored XSS through job data | Server-generated constrained IDs, DOM `textContent`, CSP, and no inline script |
 | Command injection | `exec.CommandContext` argument vector; no shell interpolation; validated endpoints and rejected filters |
 | Path traversal from listings | Relative path normalization and traversal rejection before joining |
-| Control-plane files selected as media | Local sources restricted below `/sources`, local destinations below `/destinations`, and remote sources rejected |
+| Control-plane files selected as payload | Local sources restricted below `/sources`, local destinations below `/destinations`, and remote sources rejected |
 | Source/destination self-overlap | Equal or nested endpoints on the same backend are rejected |
 | Two jobs race on one tree | API serialization plus equal/nested cross-job path rejection before mutations, runs, and analyses |
 | Unit silently changes destination | Deterministic assignment persisted in SQLite; placement-defining fields lock after first assignment |
@@ -72,7 +72,7 @@ These controls reduce accidental execution; they do not make an authorized move 
 
 `verify: checksum` maps to rclone's `--checksum` transfer comparison. Rclone uses a hash common to both backends when available. A local or CIFS-mounted source and Google Drive normally share MD5, allowing comparison with Drive's stored hash without downloading the destination object. With no common hash, rclone can fall back to size; this is not content-integrity proof. On move, `--ignore-existing` skips destination-overlap paths before either checksum or size comparison, so retained overlaps always require an independent content check. Rclone owns transfer verification, retries, and resumability.
 
-Immediately before rclone, Atomic Sync revalidates the complete source fingerprint and stable window, writes the discovered file paths to a temporary `--files-from-raw` manifest, and passes `--min-age <seconds>s` when the window is positive. The manifest fixes rclone's transfer set and is deleted after use; it is neither staging nor a media copy. After every non-dry-run copy or move, Atomic Sync uses `lsjson` to require every discovered file path and size at the final destination; move then checks source residue. This detects a missing or resized discovered object and excludes files that arrive after revalidation, without a second content transfer. It remains metadata evidence—not checksum proof or `rclone check`—and does not remove the need to quiesce writers.
+Immediately before rclone, Atomic Sync revalidates the complete source fingerprint and stable window, writes the discovered file paths to a temporary `--files-from-raw` manifest, and passes `--min-age <seconds>s` when the window is positive. The manifest fixes rclone's transfer set and is deleted after use; it is neither staging nor a payload copy. After every non-dry-run copy or move, Atomic Sync uses `lsjson` to require every discovered file path and size at the final destination; move then checks source residue. This detects a missing or resized discovered object and excludes files that arrive after revalidation, without a second content transfer. It remains metadata evidence—not checksum proof or `rclone check`—and does not remove the need to quiesce writers.
 
 An independent `rclone check --download` reads both sides and can be used for a selected deep audit. It is not the normal Atomic Sync verification path and can consume substantial source, network, and Drive bandwidth.
 
@@ -80,13 +80,14 @@ Metadata branch analysis compares paths, types, and sizes only. Its `archived` a
 
 ## Deliberate limitations
 
+- The payload contract covers regular files grouped below a directory boundary. Symbolic links and special files are unsupported; empty directories are not guaranteed to survive; ownership, permissions, extended attributes, and other POSIX metadata are outside the contract. Atomic Sync is not a filesystem-backup tool.
 - Direct copy/move favors throughput with one final-path transfer. There is no whole-directory cross-provider transaction or automatic rollback.
 - A stable window, pinned manifest, `--min-age`, and pre/post metadata gates are not writer locks. Atomic Sync cannot prove that every importer, repair task, or manual uploader has stopped, nor detect an in-place equal-size content rewrite that preserves its old modification time.
 - Rclone and each provider define retry, resume, hash, quota, and consistency semantics.
 - Direct `merge-immutable` is not atomic and can leave successfully added files at the destination if a later conflict stops the unit.
 - Move never auto-cleans an overlapping source path, even when it may be identical; independent proof and explicit operator cleanup are required.
 - Any configured source or destination endpoint with a normalized path segment exactly named `.atomic-sync-staging` is rejected. A valid parent destination may contain a legacy child from v0.1, which destination analysis excludes; source discovery fails closed if it encounters such a child. Version 0.2 does not create, transfer, or delete it, and only an explicit, independently verified operator cleanup may remove it.
-- The application token is a shared administrator secret, not user-level RBAC.
+- The application token is a shared Atomic Sync administrator secret, not a system/Tailscale password or user-level RBAC credential. Direct Tailscale-IP listeners still require it.
 - SQLite supports one Atomic Sync process; horizontal replicas are not supported.
 - The official image supports local, Google Drive, and crypt. Other providers require a reviewed custom build.
 - The Docker daemon, host root, mount availability, and operator actions remain outside the application's isolation guarantee.

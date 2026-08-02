@@ -968,7 +968,7 @@ func (r *Runner) runUnit(ctx context.Context, j model.Job, unit unitPlan) error 
 		return fail(err)
 	}
 	if j.DryRun {
-		return r.complete(execution.run.ID, execution.run, "rclone "+j.Mode+" dry run completed; no source or destination media objects changed")
+		return r.complete(execution.run.ID, execution.run, "rclone "+j.Mode+" dry run completed; no source or destination files changed")
 	}
 	if j.Mode == model.ModeMove {
 		return r.complete(execution.run.ID, execution.run, "rclone move completed; source files removed by rclone after successful transfer")
@@ -1084,7 +1084,7 @@ func (r *Runner) transferUnit(ctx context.Context, execution *unitExecution) err
 	}
 	if _, err := r.command(ctx, args...); err != nil {
 		if execution.job.DryRun {
-			return fmt.Errorf("rclone %s dry run failed; no source or destination media objects changed: %w", execution.job.Mode, err)
+			return fmt.Errorf("rclone %s dry run failed; no source or destination files changed: %w", execution.job.Mode, err)
 		}
 		if execution.job.Mode == model.ModeMove {
 			return fmt.Errorf("rclone move failed; source and destination may each contain part of the unit: %w", err)

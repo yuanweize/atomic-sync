@@ -6,7 +6,11 @@ All responses are JSON except the embedded UI and the SSE event stream. When `AT
 Authorization: Bearer <token>
 ```
 
-The UI loads without authentication and asks for the token before protected requests. It keeps the token in the current tab's `sessionStorage`, never in a query string or URL log.
+The UI shell loads without authentication. When health reports that authentication is required, it asks for the token before protected requests and keeps it in the current tab's `sessionStorage`, never in a query string or URL log. This token is an Atomic Sync application administrator secret, not an operating-system, Tailscale, storage, or rclone password.
+
+An unset token is permitted only when the application process's own `ATOMIC_LISTEN` address is explicitly loopback. Any non-loopback listener fails configuration validation unless the token is at least 32 characters. A Tailscale IP is non-loopback, so listening on it directly still requires the token. The reference container also listens non-loopback internally and therefore requires the token even if Docker publishes its port only on loopback or Tailscale.
+
+In the endpoint table below, `Yes` identifies a protected route in the reference/production token-authenticated configuration.
 
 ## Endpoints
 
@@ -48,7 +52,7 @@ The Runner validates the contract again when a stored job starts, so a manually 
 - `verify: checksum` maps to `--checksum`;
 - `verify: size` maps to `--size-only`.
 
-Every invocation also receives a temporary `--files-from-raw` manifest generated from the discovery fingerprint. It pins the transfer to the reviewed file set, is deleted after the invocation, and contains paths only—not staging data or media bytes. When `settleSeconds > 0`, the Runner also passes `--min-age <settleSeconds>s`.
+Every invocation also receives a temporary `--files-from-raw` manifest generated from the discovery fingerprint. It pins the transfer to the reviewed file set, is deleted after the invocation, and contains paths only—not staging data or payload bytes. When `settleSeconds > 0`, the Runner also passes `--min-age <settleSeconds>s`.
 
 The run states are `discovered` → `transferring` → `completed` or `failed`.
 
@@ -58,7 +62,7 @@ For non-dry-run `move`, the request must include the exact job name in:
 X-Atomic-Confirm-Job: <exact job name>
 ```
 
-The comparison is constant-time. Dry-run move requests do not require the header because no source or destination media object is written or removed; rclone may still refresh OAuth credentials in its dedicated config directory.
+The comparison is constant-time. Dry-run move requests do not require the header because no source or destination data object is written or removed; rclone may still refresh OAuth credentials in its dedicated config directory.
 
 ## Minimal dry-run job
 
@@ -83,15 +87,18 @@ The comparison is constant-time. Dry-run move requests do not require the header
 
 The API, reference UI, and example configuration default an omitted stable window to 30 days (`2592000` seconds). An explicit zero remains zero. Use `259200` only for a deliberately scoped three-day dry-run/canary.
 
-Valid groupings are `folder`, `show`, `season`, and `depth`. Valid conflict policies are `fail` and `merge-immutable`.
+Valid groupings are `folder`, `show`, `season`, and `depth`. The first and last are general directory-tree policies; `show` and `season` are hierarchy-only media presets. They do not parse names, rename media, or determine episode/season completeness. Valid conflict policies are `fail` and `merge-immutable`.
 
 Executable units must resolve to directories at one fixed hierarchy:
 
-- `folder` and `show` use one top-level directory;
-- `season` uses a two-level `Show/Season` directory;
-- `depth` uses exactly the configured positive depth.
+- `folder` uses one top-level directory and is the general-purpose default;
+- `depth` uses exactly the configured positive number of directory components for a custom tree;
+- `show` is a media preset for one top-level show directory and has the same boundary as `folder`;
+- `season` is a media preset for a two-level `Show/Season` directory.
 
-A media file above that boundary is shallow; a discovery containing both a parent and child unit is ambiguous. Either condition fails the entire run before rclone writes. Branch analysis can still report the malformed physical structure so it can be repaired.
+A file above that boundary is shallow; a discovery containing both a parent and child unit is ambiguous. Either condition fails the entire run before rclone writes. In particular, a loose file directly under `job.source` is not a transferable unit. Put a root-level loose file inside a directory unit. Changing `depth` only selects the boundary of paths that are already nested; it cannot make a file directly under `job.source` transferable. Branch analysis can still inventory the shallow path, while execution rejects it before rclone writes.
+
+Transfer manifests contain regular-file paths. Symbolic links and special files are unsupported; empty directories are not manifest entries and are not guaranteed to survive. Ownership, permissions, extended attributes, and other POSIX metadata are outside the API contract. Atomic Sync is not a filesystem-backup tool.
 
 ## Conflict policies
 
@@ -105,7 +112,7 @@ After a partial or interrupted operation, review the remaining source and destin
 
 `verify: checksum` enables rclone's `--checksum` comparison for paths rclone considers during the transfer. For a local/CIFS source and Google Drive, compatible MD5 hashes are normally compared without downloading the Drive object. `verify: size` enables `--size-only` and is the fastest metadata path. On move, `--ignore-existing` takes precedence for a destination-overlap path, so neither verification mode proves that retained source object's content. Hash availability and consistency are backend properties.
 
-Immediately before every operation, Atomic Sync re-lists the source and requires its paths, types, sizes, and modification times to match the discovery fingerprint while stable-window eligibility remains valid. Rclone receives only those file paths through `--files-from-raw`; a positive stable window is also enforced by `--min-age`. After every non-dry-run copy or move, Atomic Sync runs `lsjson` against the final destination and requires every discovered file at the same path and size; `fail` also rejects unexpected final paths, and move then checks source residue. The manifest can reduce redundant source traversal and the final listing transfers no media content, but this metadata closure is not a second content verification, checksum, or `rclone check`. Writers must still be quiesced because an in-place, equal-size rewrite that preserves its modification time cannot be proven from the fingerprint.
+Immediately before every operation, Atomic Sync re-lists the source and requires its paths, types, sizes, and modification times to match the discovery fingerprint while stable-window eligibility remains valid. Rclone receives only those file paths through `--files-from-raw`; a positive stable window is also enforced by `--min-age`. After every non-dry-run copy or move, Atomic Sync runs `lsjson` against the final destination and requires every discovered file at the same path and size; `fail` also rejects unexpected final paths, and move then checks source residue. The manifest can reduce redundant source traversal and the final listing transfers no file content, but this metadata closure is not a second content verification, checksum, or `rclone check`. Writers must still be quiesced because an in-place, equal-size rewrite that preserves its modification time cannot be proven from the fingerprint.
 
 An operator may independently run `rclone check --download` for a selected, quiesced deep audit. Atomic Sync does not invoke this slower full-content check in the normal run path.
 
@@ -115,8 +122,8 @@ An operator may independently run `rclone check --download` for a selected, quie
 
 The API returns `409 Conflict` when any source or destination is equal to, a parent of, or nested below a path already owned by another job. This check is repeated before runs and analyses so legacy overlapping records fail closed instead of executing concurrently. Job starts, analysis starts, updates, deletes, and overlap checks share a short serialization boundary.
 
-Archive-analysis units include source/destination presence, file and byte totals, matching/missing/conflicting paths, destination-only counts, and bounded evidence samples. A metadata snapshot does not prove content identity or authorize source removal. See [Branch-aware archive analysis](ARCHIVE-ANALYSIS.md).
+Branch-analysis units include source/destination presence, file and byte totals, matching/missing/conflicting paths, destination-only counts, and bounded evidence samples. A metadata snapshot does not prove content identity or authorize source removal. See [Branch-aware archive analysis](ARCHIVE-ANALYSIS.md).
 
 ## Endpoint restrictions
 
-Local sources must be below `/sources`; local destinations must be below `/destinations`. Remote sources and backslashes in local paths are rejected. The legacy `.atomic-sync-staging` namespace is reserved: validation rejects any source or destination endpoint whose normalized path contains a segment with that exact name. A valid parent destination may contain a legacy child with that name, and destination analysis ignores the child; source discovery fails closed if it encounters one below an allowed source endpoint. This prevents an API-token holder from selecting control-plane files such as `/config/rclone.conf` as media. A configured rclone remote may be used as a destination, so the API token remains administrative access to every destination remote in the mounted configuration.
+Local sources must be below `/sources`; local destinations must be below `/destinations`. Remote sources and backslashes in local paths are rejected. The legacy `.atomic-sync-staging` namespace is reserved: validation rejects any source or destination endpoint whose normalized path contains a segment with that exact name. A valid parent destination may contain a legacy child with that name, and destination analysis ignores the child; source discovery fails closed if it encounters one below an allowed source endpoint. This prevents an API-token holder from selecting control-plane files such as `/config/rclone.conf` as transfer payload. A configured rclone remote may be used as a destination, so the API token remains administrative access to every destination remote in the mounted configuration.

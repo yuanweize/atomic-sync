@@ -4,6 +4,23 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-02
+
+### Added
+
+- Progressive bilingual job editor with plain-language copy/move outcomes, human-readable stable-window units, hierarchy-only media presets, inline safety guidance, and a live source-to-destination execution summary.
+- Complete multi-destination editing for names, paths, and routing weights, plus an automated UI contract check for translation parity, references, responsive rules, and required form behaviors.
+
+### Changed
+
+- Position Atomic Sync as a regular-file, directory-unit transfer control plane; `folder` and `depth` are general rules, while `show` and `season` remain hierarchy-only media presets over the same engine.
+- Clarify in the UI and documentation that the API token is not a system or Tailscale password: only loopback listeners may omit it, while direct Tailscale-IP and reference-container listeners still require at least 32 characters.
+
+### Fixed
+
+- Stop hiding secondary destinations during edits; every saved destination and weight is now visible and round-trips through the editor.
+- Show custom depth only when it applies, preserve legacy schedules explicitly instead of presenting a misleading disabled field, and retain unused legacy depth values on no-op edits so placement locks are not tripped accidentally.
+
 ## [0.2.0] - 2026-08-01
 
 ### Added
@@ -85,7 +102,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Release-time verification of the Cosign identity, SBOM, provenance, and
   anonymous GHCR access.
 
-[Unreleased]: https://github.com/yuanweize/Atomic-Sync/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yuanweize/Atomic-Sync/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yuanweize/Atomic-Sync/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yuanweize/Atomic-Sync/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/yuanweize/Atomic-Sync/releases/tag/v0.1.3
 [0.1.2]: https://github.com/yuanweize/Atomic-Sync/releases/tag/v0.1.2

@@ -55,7 +55,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 COPY --from=rclone-build /out/rclone /usr/local/bin/rclone
 COPY --from=build /out/atomic-sync /usr/local/bin/atomic-sync
 LABEL org.opencontainers.image.title="Atomic Sync" \
-      org.opencontainers.image.description="Atomic directory migration and media archive orchestrator" \
+      org.opencontainers.image.description="Auditable directory-unit file transfer control plane" \
       org.opencontainers.image.source="https://github.com/yuanweize/atomic-sync" \
       org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.revision="$COMMIT" \

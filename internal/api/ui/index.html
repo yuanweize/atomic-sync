@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0c0d0f">
-  <meta name="description" content="Atomic directory migration and media archive orchestration.">
+  <meta name="description" content="Directory-aware file transfer orchestration with media-ready presets.">
   <title>Atomic Sync</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
@@ -17,7 +17,7 @@
     <header class="topbar">
       <a class="brand" href="/">
         <img src="/logo.svg" width="42" height="42" alt="">
-        <span><strong>Atomic Sync</strong><small data-i18n="brandTagline">Archive orchestration</small></span>
+        <span><strong>Atomic Sync</strong><small data-i18n="brandTagline">Directory transfer control plane</small></span>
       </a>
       <div class="top-actions">
         <span class="connection" id="connectionStatus" role="status"><i></i><span data-i18n="connecting">Connecting</span></span>
@@ -25,14 +25,14 @@
         <button class="button secondary compact" id="authButton" type="button" aria-label="Unlock" data-i18n-aria-label="unlock">
           <span class="auth-label" data-i18n="unlock">Unlock</span>
         </button>
-        <button class="button primary compact" id="newJobButton" type="button"><span>＋</span><span class="new-job-label" data-i18n="newJob">New job</span></button>
+        <button class="button primary compact" id="newJobButton" type="button" aria-label="New job" data-i18n-aria-label="newJob"><span aria-hidden="true">＋</span><span class="new-job-label" data-i18n="newJob">New job</span></button>
       </div>
     </header>
 
     <section class="hero" aria-labelledby="heroTitle">
       <div class="eyebrow"><span></span><span data-i18n="eyebrow">CONTROL PLANE · SAFE BY DEFAULT</span></div>
-      <h1 id="heroTitle" data-i18n="heroTitle">Plan and transfer media as complete directory units.</h1>
-      <p data-i18n="heroText">Every eligible directory runs through rclone as one auditable operation, with partial outcomes kept visible.</p>
+      <h1 id="heroTitle" data-i18n="heroTitle">Transfer files in complete, verifiable directory units.</h1>
+      <p data-i18n="heroText">Use general folder rules or media-ready presets. Every selected unit is inventoried, transferred with rclone, verified, and audited.</p>
     </section>
 
     <section class="safety-banner" aria-label="Safety status" data-i18n-aria-label="safetyStatus">
@@ -66,38 +66,80 @@
     <footer><span>Atomic Sync <b id="version">dev</b></span><span data-i18n="footerText">Deterministic routing · SQLite audit trail · rclone transport</span></footer>
   </main>
 
-  <dialog id="jobDialog" class="dialog wide-dialog" aria-labelledby="jobDialogTitle">
-    <form id="jobForm" method="dialog">
-      <div class="dialog-head"><div><span class="section-kicker" data-i18n="jobConfig">JOB CONFIGURATION</span><h2 id="jobDialogTitle" data-i18n="createJob">Create a transfer job</h2></div><button class="close-button" type="button" data-close="jobDialog" aria-label="Close" data-i18n-aria-label="close">×</button></div>
+  <dialog id="jobDialog" class="dialog job-dialog" aria-labelledby="jobDialogTitle" aria-describedby="jobDialogIntro">
+    <form id="jobForm" class="job-form" method="dialog">
+      <div class="dialog-head"><div><span class="section-kicker" data-i18n="jobConfig">JOB CONFIGURATION</span><h2 id="jobDialogTitle" data-i18n="createJob">Create a transfer job</h2><p class="dialog-intro" id="jobDialogIntro" data-i18n="jobDialogIntro">Start with the essentials. Safety and performance controls are explained below and conservative by default. Fields marked * are required.</p></div><button class="close-button" type="button" data-close="jobDialog" aria-label="Close" data-i18n-aria-label="close">×</button></div>
       <input type="hidden" name="id">
-      <div class="form-grid">
-        <label class="field span-2"><span data-i18n="jobName">Job name</span><input name="name" required maxlength="128" autocomplete="off" placeholder="Archive stable movies" data-i18n-placeholder="jobNamePlaceholder"></label>
-        <label class="field span-2"><span data-i18n="source">Source</span><input name="source" required autocomplete="off" placeholder="/sources/media/movies"><small data-i18n="sourceHint">Use an absolute path below /sources. Move mode requires an explicitly writable source mount.</small></label>
-        <label class="field"><span data-i18n="destinationName">Destination ID</span><input name="destinationName" required pattern="[A-Za-z0-9][A-Za-z0-9._\x2D]{0,63}" value="gd-primary"></label>
-        <label class="field"><span data-i18n="destinationPath">Destination path</span><input name="destinationPath" required autocomplete="off" placeholder="GD:data/media/movies"></label>
-        <label class="field"><span data-i18n="mode">Mode</span><select name="mode"><option value="copy" data-i18n="copyMode">Copy · preserve source</option><option value="move" data-i18n="moveMode">Direct rclone move · remove transferred source files</option></select></label>
-        <label class="field"><span data-i18n="grouping">Atomic unit</span><select name="grouping"><option value="folder" data-i18n="folderUnit">Top-level folder</option><option value="show" data-i18n="showUnit">Complete show</option><option value="season" data-i18n="seasonUnit">Season</option><option value="depth" data-i18n="depthUnit">Path depth</option></select></label>
-        <label class="field"><span data-i18n="conflictPolicy">Existing destination</span><select name="conflictPolicy"><option value="fail" data-i18n="failClosed">Fail closed (recommended)</option><option value="merge-immutable" data-i18n="immutableMerge">Immutable merge · never overwrite</option></select></label>
-        <label class="field"><span data-i18n="verify">Verification</span><select name="verify"><option value="checksum" data-i18n="checksum">Native hash when available</option><option value="size" data-i18n="sizeOnly">Size only · metadata</option></select></label>
-        <label class="field"><span data-i18n="settleSeconds">Stable window (seconds)</span><input name="settleSeconds" type="number" min="0" max="315360000" value="2592000"></label>
-        <label class="field"><span data-i18n="concurrency">Concurrency</span><input name="concurrency" type="number" min="1" max="8" value="2"></label>
-        <label class="field"><span data-i18n="depth">Depth</span><input name="depth" type="number" min="1" max="32" value="1"></label>
-        <label class="field"><span data-i18n="schedule">Schedule</span><input name="schedule" autocomplete="off" placeholder="Reserved for a future release" data-i18n-placeholder="schedulePlaceholder" disabled></label>
-      </div>
-      <div class="switch-stack">
-        <label class="switch-row"><input name="dryRun" type="checkbox" checked><span class="switch"></span><span><strong data-i18n="dryRun">Dry run</strong><small data-i18n="dryRunHint">Run the real rclone plan without changing source or destination media objects. OAuth tokens may refresh.</small></span></label>
-        <label class="switch-row"><input name="paused" type="checkbox"><span class="switch"></span><span><strong data-i18n="paused">Paused</strong><small data-i18n="pausedHint">Save the job but prevent manual execution.</small></span></label>
-      </div>
-      <div class="dialog-actions"><button class="button secondary" type="button" data-close="jobDialog" data-i18n="cancel">Cancel</button><button class="button primary" type="submit" id="saveJobButton" data-i18n="saveJob">Save job</button></div>
+
+      <section class="form-section" aria-labelledby="sourceSectionTitle">
+        <div class="form-section-head"><span class="form-step" aria-hidden="true">1</span><div><h3 id="sourceSectionTitle" data-i18n="whatToTransfer">What to transfer</h3><p data-i18n="whatToTransferHint">Name the job, choose the container source, and define which directory boundary moves together.</p></div></div>
+        <div class="form-grid">
+          <label class="field span-2" for="jobName"><span><span data-i18n="jobName">Job name</span><b class="required-mark" aria-hidden="true">*</b></span><input id="jobName" name="name" required maxlength="128" autocomplete="off" placeholder="Archive stable folders" data-i18n-placeholder="jobNamePlaceholder" aria-describedby="jobNameHint"><small id="jobNameHint" data-i18n="jobNameHint">Use a recognizable name. A real move asks you to type this exact name again.</small></label>
+          <label class="field span-2" for="jobSource"><span><span data-i18n="source">Source</span><b class="required-mark" aria-hidden="true">*</b></span><input id="jobSource" name="source" required maxlength="1024" autocomplete="off" placeholder="/sources/archive" aria-describedby="sourceHint"><small id="sourceHint" data-i18n="sourceHint">Container path below /sources for regular files. Symlinks, special files, and empty-directory preservation are unsupported. Real move also requires this mount to be writable.</small></label>
+          <label class="field" for="jobGrouping"><span data-i18n="grouping">Transfer unit</span><select id="jobGrouping" name="grouping" aria-describedby="groupingHint">
+            <optgroup label="General directory rules" data-i18n-label="generalRules">
+              <option value="folder" data-i18n="folderUnit">Top-level folder (general / movies)</option>
+              <option value="depth" data-i18n="depthUnit">Custom directory depth</option>
+            </optgroup>
+            <optgroup label="Media presets" data-i18n-label="mediaPresets">
+              <option value="show" data-i18n="showUnit">Complete TV show</option>
+              <option value="season" data-i18n="seasonUnit">TV season</option>
+            </optgroup>
+          </select><small id="groupingHint" data-i18n="groupingHint">A unit is the planning and audit boundary, not a cross-provider transaction. Media presets only select hierarchy boundaries; they do not inspect names or episode completeness. Loose source-root files fail closed.</small></label>
+          <label class="field" id="depthField" for="jobDepth" hidden><span data-i18n="depth">Directory depth</span><input id="jobDepth" name="depth" type="number" min="1" max="32" value="1" aria-describedby="depthHint"><small id="depthHint" data-i18n="depthHint">Depth 2 groups a/b/file.ext as unit a/b.</small></label>
+        </div>
+      </section>
+
+      <section class="form-section" aria-labelledby="destinationSectionTitle">
+        <div class="form-section-head"><span class="form-step" aria-hidden="true">2</span><div><h3 id="destinationSectionTitle" data-i18n="whereToTransfer">Where to transfer</h3><p data-i18n="whereToTransferHint">Use an rclone remote path or an allowed local destination mount. Every configured destination is visible here and locks after the first assignment.</p></div></div>
+        <div class="destination-list" id="destinationList"></div>
+        <button class="button secondary add-destination" id="addDestinationButton" type="button"><span aria-hidden="true">＋</span><span data-i18n="addDestination">Add destination</span></button>
+      </section>
+
+      <section class="form-section" aria-labelledby="operationSectionTitle">
+        <div class="form-section-head"><span class="form-step" aria-hidden="true">3</span><div><h3 id="operationSectionTitle" data-i18n="operation">Operation</h3><p data-i18n="operationHint">Choose whether successful transfers keep or remove their source files, then set how long a whole unit must remain unchanged.</p></div></div>
+        <fieldset class="choice-fieldset">
+          <legend data-i18n="mode">Mode</legend>
+          <div class="choice-grid">
+            <label class="choice-option"><input type="radio" name="mode" value="copy" checked><span class="choice-content"><strong data-i18n="copyModeTitle">Copy</strong><small data-i18n="copyModeHint">Write missing files to the destination and preserve every source file.</small></span></label>
+            <label class="choice-option danger-choice"><input type="radio" name="mode" value="move"><span class="choice-content"><strong data-i18n="moveModeTitle">Move</strong><small data-i18n="moveModeHint">Use rclone move; each successfully transferred file is removed from the source. Overlaps stay for review.</small></span></label>
+          </div>
+        </fieldset>
+        <div class="form-grid compact-grid">
+          <div class="field span-2"><label for="settleValue"><span data-i18n="stableWindow">Stable window</span><b class="required-mark" aria-hidden="true">*</b></label><div class="duration-control"><input id="settleValue" name="settleValue" type="number" min="0" step="1" value="30" inputmode="numeric" required aria-describedby="settleHint"><select id="settleUnit" name="settleUnit" aria-label="Stable window unit" data-i18n-aria-label="stableWindowUnit"><option value="86400" data-i18n="unitDays">days</option><option value="3600" data-i18n="unitHours">hours</option><option value="60" data-i18n="unitMinutes">minutes</option><option value="1" data-i18n="unitSeconds">seconds</option></select></div><small id="settleHint" data-i18n="settleHint">The newest file sets the age of the whole unit. Keep 30 days for production; use shorter windows only for scoped dry-runs.</small></div>
+        </div>
+        <div class="switch-stack">
+          <label class="switch-row"><input name="dryRun" type="checkbox" checked><span class="switch"></span><span><strong data-i18n="dryRun">Dry run</strong><small data-i18n="dryRunHint">Execute the real rclone plan with --dry-run. Files stay unchanged; OAuth tokens may still refresh.</small></span></label>
+          <label class="switch-row"><input name="paused" type="checkbox"><span class="switch"></span><span><strong data-i18n="paused">Paused</strong><small data-i18n="pausedHint">A paused job cannot be run manually until you edit and unpause it.</small></span></label>
+        </div>
+      </section>
+
+      <details class="advanced-settings" id="advancedSettings">
+        <summary><span><strong data-i18n="advancedSettings">Advanced settings</strong><small data-i18n="advancedSettingsHint">Conflict handling, verification, concurrency, and destination routing weights.</small></span></summary>
+        <div class="advanced-body form-grid">
+          <label class="field" for="jobConflict"><span data-i18n="conflictPolicy">If destination unit exists</span><select id="jobConflict" name="conflictPolicy" aria-describedby="conflictHint"><option value="fail" data-i18n="failClosed">Stop before transfer (recommended)</option><option value="merge-immutable" data-i18n="immutableMerge">Add missing paths, never overwrite</option></select><small id="conflictHint" data-i18n="conflictHint">Fail is best for a clean target. Immutable merge keeps every overlapping source path during move and reports the unit partial.</small></label>
+          <label class="field" for="jobVerify"><span data-i18n="verify">Transfer comparison</span><select id="jobVerify" name="verify" aria-describedby="verifyHint"><option value="checksum" data-i18n="checksum">Compatible hash when available</option><option value="size" data-i18n="sizeOnly">Path and size only (fastest)</option></select><small id="verifyHint" data-i18n="verifyHint">Checksum uses a shared backend hash when one exists and may fall back. Size-only is metadata evidence, not content proof.</small></label>
+          <label class="field" for="jobConcurrency"><span><span data-i18n="concurrency">Concurrent directory units</span><b class="required-mark" aria-hidden="true">*</b></span><input id="jobConcurrency" name="concurrency" type="number" min="1" max="8" value="2" required aria-describedby="concurrencyHint"><small id="concurrencyHint" data-i18n="concurrencyHint">This is the number of simultaneous rclone processes, not file streams. Higher values multiply provider and disk load.</small></label>
+          <div class="field routing-help"><span data-i18n="routingWeights">Destination weights</span><small data-i18n="routingWeightsHint">Weights choose a destination deterministically for new units. Existing assignments remain pinned.</small></div>
+          <div class="legacy-notice span-2" id="legacyNotice" role="note" hidden></div>
+        </div>
+      </details>
+
+      <section class="review-box" aria-labelledby="reviewTitle">
+        <div><span class="section-kicker" data-i18n="review">REVIEW</span><h3 id="reviewTitle" data-i18n="whatWillHappen">What will happen</h3></div>
+        <ul><li id="summaryRoute"></li><li id="summaryAction"></li><li id="summaryUnit"></li><li id="summaryStability"></li><li id="summaryConflict"></li><li id="summaryVerification"></li></ul>
+      </section>
+      <p class="form-error" id="jobFormError" role="alert" tabindex="-1" hidden></p>
+      <div class="dialog-actions sticky-actions"><button class="button secondary" type="button" data-close="jobDialog" data-i18n="cancel">Cancel</button><button class="button primary" type="submit" id="saveJobButton" data-i18n="saveJob">Save job</button></div>
     </form>
   </dialog>
 
   <dialog id="authDialog" class="dialog auth-dialog" aria-labelledby="unlockTitle" aria-describedby="unlockText">
     <form id="authForm" method="dialog">
       <div class="auth-mark"><img src="/logo.svg" width="56" height="56" alt=""></div>
-      <h2 id="unlockTitle" data-i18n="unlockTitle">Unlock the control plane</h2>
-      <p id="unlockText" data-i18n="unlockText">Enter the API token configured on this server. It remains in this browser tab only.</p>
-      <label class="field"><span data-i18n="apiToken">API token</span><input name="token" type="password" required autocomplete="current-password" spellcheck="false"></label>
+      <h2 id="unlockTitle" data-i18n="unlockTitle">Verify access to Atomic Sync</h2>
+      <p id="unlockText" data-i18n="unlockText">Enter ATOMIC_API_TOKEN—not your system password. Direct Tailscale-IP listeners still require it; only loopback listeners may omit it.</p>
+      <div class="field"><label for="apiToken" data-i18n="apiToken">API control token</label><span class="token-control"><input id="apiToken" name="token" type="password" required autocomplete="off" spellcheck="false" aria-describedby="tokenHint authError"><button class="token-toggle" id="toggleTokenButton" type="button" aria-pressed="false" data-i18n="showToken">Show</button></span><small id="tokenHint" data-i18n="tokenHint">Stored only in this browser tab's session storage and sent only to this server as a Bearer token.</small><small class="field-error" id="authError" role="alert" data-i18n="invalidToken" hidden>The token was not accepted by this server.</small></div>
       <div class="dialog-actions auth-actions"><button class="button secondary" id="forgetTokenButton" type="button" data-i18n="forgetToken">Forget token</button><button class="button primary" type="submit" data-i18n="unlock">Unlock</button></div>
     </form>
   </dialog>

@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/atomic-sync-wordmark.svg" width="560" alt="Atomic Sync">
 
-  <p><strong>以完整目录为单位、由 rclone 全程执行的媒体归档控制面。</strong></p>
+  <p><strong>以目录单元传输普通文件，由 rclone 全程执行。</strong></p>
 
   <p>
     <a href="README.md">English</a> ·
@@ -13,14 +13,16 @@
 
 ---
 
-Atomic Sync 面向本地或 CIFS 挂载来源到 Google Drive 的大规模媒体归档。它把一部电影、整部剧或一季识别成一个完整规划单元，等待整个单元稳定，固定目标分支，然后直接交给 rclone 完成数据传输。
+Atomic Sync 是普通文件目录树的 copy/move 控制面：它把本地或 CIFS 挂载来源中的普通文件按固定目录边界分组，等待整个单元稳定，固定到官方镜像支持的 rclone 目标，再直接交给 rclone 传输。通用的 `folder` 和 `depth` 可用于项目目录、数据集、导出结果、构建产物等分层数据；`show` 和 `season` 是媒体库层级的便捷预设。
 
 它主要解决两个普通传输命令无法独立解决的问题：
 
-- 后加入的一集、字幕或海报应该重置整个目录的稳定时间，不能让同一部剧被按单文件年龄拆到不同存储；
+- 后加入的文件应该重置整个目录单元的稳定时间，不能让同一个逻辑文件树被按单文件年龄拆到不同存储；
 - mergerfs 合并视图中的同名目录，不代表两个物理分支已经完整归档，也可能是部分重叠、完全零散、冲突或空壳。
 
-Atomic Sync 不替代 rclone，不代理文件内容，也不再实现一套 Google Drive 客户端。**rclone 是唯一数据面**；Atomic Sync 只负责策略、完整目录分组、目标分配、分支分析、运行历史和受保护的 Web 控制面。
+Atomic Sync 不替代 rclone，不代理文件内容，也不再实现一套 Google Drive 客户端。**rclone 是唯一数据面**；Atomic Sync 只负责策略、目录单元分组、目标分配、分支分析、运行历史和受保护的 Web 控制面。它不是单文件同步器：直接放在 `job.source` 根层的零散文件高于所有可执行单元边界，发现阶段会安全失败。
+
+它的载荷约定比文件系统备份更窄：Atomic Sync 只清点目录单元内的普通文件，不跟随或保留符号链接与特殊文件，不保证空目录留存，也不承诺保留所有者、权限、扩展属性等 POSIX 元数据。`show` 和 `season` 只选择一层或两层目录边界，不解析或重命名媒体，也不判断剧集或季是否完整。
 
 ## 只有两种模式
 
@@ -31,18 +33,20 @@ Atomic Sync 不替代 rclone，不代理文件内容，也不再实现一套 Goo
 
 项目不会提供第三个 `sync` 模式。rclone 的 `sync` 是**单向镜像**，可能删除目标侧独有文件，并不是双向同步；Atomic Sync 不需要这种目标清理语义。真正的双向同步属于另一类产品，Syncthing 也是独立实现，并不是基于 rclone。
 
-## 为什么必须以完整目录为单位
+## 为什么以完整目录树为单位
 
-`rclone move --min-age 30d` 按单个文件计算年龄。如果 40 天前已有海报，而最后一集昨天才下载完成，旧文件可能先被移动，最终同一部剧被拆散。
+`rclone move --min-age 30d` 按单个文件计算年龄。如果关联文件中一个在 40 天前写入，另一个昨天才到达，旧文件可能先被移动，最终同一逻辑目录树被拆散。
 
-Atomic Sync 检查完整单元中最新文件的修改时间：
+Atomic Sync 检查完整目录单元中最新文件的修改时间。可以选择通用策略或媒体预设：
 
 ```text
-电影分组       → Movie/
-整剧分组       → Show/
-季分组         → Show/Season 01/
-自定义深度     → 严格 N 层目录
+顶层目录（`folder`） → Project/                    通用
+自定义深度（`depth`） → Org/Project/                通用，严格 N 层
+整剧预设（`show`）     → Show/                       媒体预设
+按季预设（`season`）   → Show/Season 01/             媒体预设
 ```
+
+每个可传输文件都必须位于选定边界之下。例如 `folder` 接受 `Project/report.pdf`，但会拒绝直接位于 `job.source` 下的零散 `report.pdf`；`depth: 2` 则要求类似 `Org/Project/report.pdf` 的结构。当前没有“根目录文件”或“按单文件”分组模式。
 
 仓库默认稳定窗口是 **30 天**（`2,592,000` 秒）。三天（`259,200` 秒）只适合小范围 dry-run 或金丝雀测试，不是项目默认值。稳定窗口大于零时，同一个秒数也会作为 `--min-age <seconds>s` 传给 rclone，形成最后一道年龄保护。
 
@@ -67,14 +71,15 @@ flowchart LR
 - **所有数据操作都由 rclone 完成。** 重试、限速、可恢复传输、检查和 Drive 行为都留在成熟的数据面。
 - **直接写最终路径。** 不会为了发布再上传一份目标暂存副本。
 - **绝不镜像删除目标。** 两种模式都不会调用 rclone `sync`。
-- **默认真实 dry-run。** 使用同一 rclone 操作追加 `--dry-run` 检查两端；来源和目标媒体对象不变，但 rclone 可能在专用配置目录刷新 OAuth Token。
+- **默认真实 dry-run。** 使用同一 rclone 操作追加 `--dry-run` 检查两端；来源和目标数据对象不变，但 rclone 可能在专用配置目录刷新 OAuth Token。
 - **目录边界安全失败。** 浅层文件、路径穿越、父子单元重叠、端点重叠和保留内部路径都会阻止执行。
 - **不可变冲突策略。** 默认策略在目标单元已存在时停止；显式合并只补缺失文件，不覆盖不同的目标对象。
 - **固定目标分配。** 加权选择会写入 SQLite，重试不会把一个单元重新分流。
 - **多层并发上限。** 任务 worker、全局 rclone 进程、进程内 transfers/checkers 和服务商 TPS 分开控制。
+- **双语引导式编辑器。** 人类可读的稳定期、完整可见的多目标分流、媒体预设、渐进展开的高级设置和实时执行摘要，减少配置猜测。
 - **容器默认加固。** 固定 UID/GID 1000、只读根文件系统、零 capabilities 与 `no-new-privileges`。
 
-直接传输是明确的性能选择。跨服务商 move 不是 ACID 目录重命名：rclone 按对象传输并确认，进程中断时两个分支可能出现部分完成状态。rclone 启动前，Atomic Sync 会重新列出来源并要求它与发现指纹一致，再把已发现文件路径写入临时 `--files-from-raw` 清单；rclone 因而只处理这个固定集合，不会顺带传输复检后才到达的文件。操作结束即删除清单；它只是控制数据，不是 staging 或媒体副本。每次非 dry-run copy/move 后都会列出最终目标，要求发现指纹中的每个文件路径和大小存在；move 再检查来源残留。这不会进行第二份内容传输，还能减少重复来源遍历，但元数据闭环无法锁住写入者，也不能证明保留旧修改时间的等大小原地改写。生产 move 仍必须停止写入者。
+直接传输是明确的性能选择。跨服务商 move 不是 ACID 目录重命名：rclone 按对象传输并确认，进程中断时两个分支可能出现部分完成状态。rclone 启动前，Atomic Sync 会重新列出来源并要求它与发现指纹一致，再把已发现文件路径写入临时 `--files-from-raw` 清单；rclone 因而只处理这个固定集合，不会顺带传输复检后才到达的文件。操作结束即删除清单；它只是控制数据，不是 staging 或文件内容副本。每次非 dry-run copy/move 后都会列出最终目标，要求发现指纹中的每个文件路径和大小存在；move 再检查来源残留。这不会进行第二份内容传输，还能减少重复来源遍历，但元数据闭环无法锁住写入者，也不能证明保留旧修改时间的等大小原地改写。生产 move 仍必须停止写入者。
 
 ## mergerfs 底层归档状态
 
@@ -105,11 +110,13 @@ cp /path/to/rclone.conf rclone/rclone.conf
 cp .env.example .env
 ```
 
-生成至少 32 字符的 API Token 并写入 `.env`：
+生成至少 32 字符的 Atomic Sync API Token 并写入 `.env`：
 
 ```bash
 openssl rand -hex 32
 ```
+
+这是 Atomic Sync 自己的 Bearer Token，不是操作系统、Tailscale、存储或 rclone 密码。参考容器内部监听非 loopback 地址，因此即使 Docker 只把端口发布到 loopback 或 Tailscale IP，也必须设置 Token。只有应用进程自身的 `ATOMIC_LISTEN` 显式绑定 loopback 时才可省略；直接监听 Tailscale IP 仍属于非 loopback，必须使用至少 32 字符的 Token。
 
 准备两个可写的专用目录。rclone 需要通过临时文件和原子重命名保存 OAuth 刷新结果，因此只能挂载 Atomic Sync 自己的配置目录，不能复用主机全局配置。
 
@@ -121,7 +128,7 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d --build atomic-sync
 docker compose ps atomic-sync
 ```
 
-打开 `http://127.0.0.1:8088`，输入 Token，先创建暂停的 dry-run 任务。参考 Compose 把 `/sources/media` 挂载为只读：它可以安全运行 `copy` 和任意模式的 dry-run；真正的 `move` 必须按[运维手册](docs/OPERATIONS.md)显式审核并更改来源挂载权限。
+打开 `http://127.0.0.1:8088`，输入 Token，先创建暂停的 dry-run 任务。参考 Compose 把 `/sources/media` 挂载为只读；这个容器路径只是示例挂载名，不代表引擎只支持媒体。它可以安全运行 `copy` 和任意模式的 dry-run；真正的 `move` 必须按[运维手册](docs/OPERATIONS.md)显式审核并更改来源挂载权限。
 
 ### 最小安全任务
 
@@ -155,7 +162,7 @@ docker compose ps atomic-sync
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.2.0@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.3.0@sha256:<release-digest>
 ```
 
 先校验完整 Compose 模型，再只重建共享栈中的 Atomic Sync：
@@ -193,12 +200,12 @@ docker compose up -d --no-deps atomic-sync
 
 ## 安全边界
 
-- 参考/生产部署的受保护 API 要求 Bearer Token。只有显式绑定 loopback 的开发进程可以无 Token；非 loopback 监听会拒绝缺失或过短 Token。
+- 参考/生产部署要求至少 32 字符的 Atomic Sync Bearer Token。只有应用进程显式绑定 loopback 时可以无 Token；直接监听 Tailscale IP 仍是非 loopback，必须使用 Token。
 - 浏览器只把 Token 保存到当前标签页的 `sessionStorage`，不会写入 URL 或持久化 local storage。
 - 程序通过参数数组启动 rclone，不经过 shell 拼接。
 - 本地来源只能位于 `/sources`；本地目标只能位于 `/destinations`；远程来源会被拒绝。
 - 不同任务的相同或嵌套路径会被拒绝；第一次目标分配后，影响放置的字段会被锁定。
-- API Token 等同于挂载的 rclone 配置中所有目标 remote 的管理权限。
+- API Token 是应用专用的管理密钥，不是系统或 Tailscale 密码；它等同于挂载的 rclone 配置中所有目标 remote 的管理权限。
 - 真正的 `move` 具有删除性。容器写权限、任务配置、显式确认和停止写入者是互相独立的运维责任。
 
 SQLite 只支持一个 Atomic Sync 进程，不能让多个副本同时使用同一个数据库。

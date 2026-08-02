@@ -105,7 +105,7 @@ func TestRunnerDryRunDoesNotWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs, err := database.Runs(context.Background(), 10)
-	if err != nil || len(runs) != 1 || runs[0].State != "completed" || !strings.Contains(runs[0].Message, "no source or destination media objects changed") {
+	if err != nil || len(runs) != 1 || runs[0].State != "completed" || !strings.Contains(runs[0].Message, "no source or destination files changed") {
 		t.Fatalf("unexpected dry run: %#v err=%v", runs, err)
 	}
 	if calls := fake.snapshot(); countCommand(calls, "copy") != 1 || countCommand(calls, "lsf") != 1 || countCommand(calls, "lsjson") != 2 {

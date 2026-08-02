@@ -2,11 +2,11 @@
 
 Union filesystems such as mergerfs merge directory names and contents from multiple physical branches. A path visible at `/data/merged/Show` can contain some files from StorageBox and others from Google Drive. That merged path is useful to Sonarr and media players, but it cannot prove whether the source branch has been archived.
 
-Atomic Sync always analyzes the physical job source and each configured physical destination. Do not configure the mergerfs union as both the source of truth and the archive destination.
+Atomic Sync always analyzes the physical job source and each configured physical destination. The comparison works for any supported directory-unit policy; mergerfs-backed media libraries are the specialized example in this guide. Do not configure the mergerfs union as both the source of truth and the archive destination.
 
 ## Decision model
 
-The analyzer runs `rclone lsjson --recursive` once for the source and once for each destination. It groups entries using the job's complete-directory policy, then compares every source file with the same relative path at the unit's assigned destination.
+The analyzer runs `rclone lsjson --recursive` once for the source and once for each destination. It groups entries using the job's directory-unit policy, then compares every source file with the same relative path at the unit's assigned destination.
 
 ```text
 source has no files + destination has files       → archived
@@ -73,17 +73,20 @@ Calculating checksums across a multi-terabyte CIFS mount merely to refresh a das
 
 For a local or CIFS-mounted source and Google Drive, normal checksum transfer verification can calculate the local MD5 and compare it with Drive's stored MD5. It does not normally need to download the Drive object. Exact hash availability remains an rclone/backend property. Rclone owns this transfer verification, retries, and resumability. Every invocation is pinned to the discovery fingerprint's file paths through a temporary `--files-from-raw` manifest. After every non-dry-run copy or move, Atomic Sync separately requires each discovered file at the final destination with the same path and size; move then checks source residue. The manifest and metadata-completeness gate are not staging, a second content transfer, or `rclone check`.
 
-Job validation rejects any source or destination endpoint whose normalized path contains a segment exactly named `.atomic-sync-staging`. A valid parent destination may still contain a legacy child with that name; destination inventory deliberately excludes the child. Version 0.2 never creates, transfers, or deletes that legacy recovery namespace; inventory and verify it separately before any explicit manual cleanup. Source discovery also fails closed if it encounters the namespace below an allowed source endpoint rather than silently treating it as media.
+Job validation rejects any source or destination endpoint whose normalized path contains a segment exactly named `.atomic-sync-staging`. A valid parent destination may still contain a legacy child with that name; destination inventory deliberately excludes the child. Version 0.2 never creates, transfers, or deletes that legacy recovery namespace; inventory and verify it separately before any explicit manual cleanup. Source discovery also fails closed if it encounters the namespace below an allowed source endpoint rather than silently treating it as payload.
 
 ## Analysis units versus executable units
 
-The analyzer records malformed and scattered physical layouts so operators can repair them, but execution is stricter. A runnable unit must resolve to a directory at one fixed boundary:
+The analyzer inventories shallow and scattered physical paths for operator review, but it does not attach a dedicated malformed-path diagnosis. Execution is stricter: a runnable unit must resolve to a directory at one fixed boundary:
 
-- `folder` and `show`: one top-level directory;
-- `season`: exactly `Show/Season`;
-- `depth`: exactly the configured positive number of directory components.
+- `folder`: one top-level directory for general directory trees;
+- `depth`: exactly the configured positive number of directory components for custom general trees;
+- `show`: one top-level show directory, a media preset equivalent to the `folder` boundary;
+- `season`: exactly `Show/Season`, a two-level media preset.
 
-A media file above that boundary is shallow. A discovery result containing both a parent directory and one of its descendants as separate units is ambiguous. Either condition fails the complete run before any rclone write starts. This prevents a root-level episode and its `Season 03` directory from being handled as independent archive units.
+The media presets are hierarchy labels only. They do not parse names, rename media, or determine whether a show or season is complete.
+
+A file above that boundary is shallow. In particular, a loose file directly under `job.source` cannot be an executable unit; there is no per-file grouping mode. A discovery result containing both a parent directory and one of its descendants as separate units is ambiguous. Either condition fails the complete run before any rclone write starts. This prevents a root-level file and one of its related directories from being handled as independent transfer units.
 
 ## Examples
 
@@ -129,4 +132,4 @@ Avoid repeated manual refreshes while Drive reports quota exhaustion. Pause new 
 
 ## Empty directories
 
-Some object stores do not preserve empty directories, while CIFS does. `empty` is informational. Do not create or delete content solely to make empty-directory counts match.
+Some object stores do not preserve empty directories, while CIFS does. Empty directory shells can inform branch analysis, but they are not entries in the transfer manifest and are not guaranteed to be copied or preserved. `empty` is informational. Do not create or delete content solely to make empty-directory counts match.

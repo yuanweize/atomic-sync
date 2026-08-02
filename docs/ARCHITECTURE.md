@@ -1,6 +1,6 @@
 # Architecture and execution model
 
-Atomic Sync is a single Go binary with an embedded bilingual browser UI, a REST/SSE API, a bounded rclone execution engine, and a single-writer SQLite store. Rclone is the only data plane: Atomic Sync supplies grouping, safety policy, destination assignment, branch analysis, and durable control-plane history.
+Atomic Sync is a single Go binary with an embedded bilingual browser UI, a REST/SSE API, a bounded rclone execution engine, and a single-writer SQLite store. Rclone is the only data plane: Atomic Sync supplies directory-unit grouping, safety policy, destination assignment, branch analysis, and durable control-plane history. The execution model is generic to regular files organized below a directory boundary; media-aware names are hierarchy presets over the same model.
 
 ## Components
 
@@ -33,7 +33,7 @@ copy → rclone copy  → source preserved
 move → rclone move  → successfully transferred source objects removed
 ```
 
-Both operations target the assigned final destination directly in one rclone invocation. Rclone owns per-object transfer verification, retries, resumability, and source removal semantics. Atomic Sync generates a temporary `--files-from-raw` manifest from the discovery fingerprint for every invocation, pinning rclone to the already reviewed file set and avoiding another unconstrained source-tree discovery. The manifest is removed when the invocation ends and never contains media bytes.
+Both operations target the assigned final destination directly in one rclone invocation. Rclone owns per-object transfer verification, retries, resumability, and source removal semantics. Atomic Sync generates a temporary `--files-from-raw` manifest from the discovery fingerprint for every invocation, pinning rclone to the already reviewed file set and avoiding another unconstrained source-tree discovery. The manifest is removed when the invocation ends and never contains payload bytes.
 
 `verify: checksum` maps to rclone `--checksum`; `verify: size` maps to `--size-only`. When `settleSeconds > 0`, the Runner also passes the same duration as `--min-age <seconds>s`. New transfer runs do not invoke a separate post-transfer content check. After every non-dry-run copy or move, the Runner uses `lsjson` on the final destination and requires every file in the discovery fingerprint to exist at the same relative path and byte size; under `fail`, it also rejects unexpected final paths. This is a metadata-completeness gate, not `rclone check`, checksum proof, staging, or a second content transfer. Rclone `sync` is deliberately absent because it can delete destination-only objects.
 
@@ -62,17 +62,20 @@ The model requires an explicit mode-specific contract:
 - `mode: copy` with `deleteSource: false`;
 - `mode: move` with `deleteSource: true`.
 
-The API and Runner validate this pairing independently, including for dry-runs. Conflict policy (`fail` or `merge-immutable`) and verification (`size` or `checksum`) remain independent for both modes. The reference Compose source is read-only and jobs default to dry-run. Enabling real move requires a reviewed writable source bind, quiesced writers, and `X-Atomic-Confirm-Job` containing the exact job name. The API token is administrative access to all configured destination remotes.
+The API and Runner validate this pairing independently, including for dry-runs. Conflict policy (`fail` or `merge-immutable`) and verification (`size` or `checksum`) remain independent for both modes. The reference Compose source is read-only and jobs default to dry-run. Enabling real move requires a reviewed writable source bind, quiesced writers, and `X-Atomic-Confirm-Job` containing the exact job name. The API token is an Atomic Sync administrator secret, not a system password, and grants access to all configured destination remotes. It may be omitted only when the application process itself listens explicitly on loopback; a Tailscale-IP listener remains non-loopback and requires at least 32 characters.
 
 ## Execution-unit contract
 
-An executable unit is always a directory at one fixed hierarchy boundary:
+An executable unit is always a directory at one fixed hierarchy boundary. The policies share one engine but have different operator-facing intent:
 
-- `folder` and `show`: one top-level directory;
-- `season`: exactly `Show/Season`;
-- `depth`: exactly the configured positive number of directory components.
+- `folder`: one top-level directory, for general directory trees;
+- `depth`: exactly the configured positive number of directory components, for custom general trees;
+- `show`: one top-level `Show` directory, a media preset with the same boundary as `folder`;
+- `season`: exactly `Show/Season`, a two-level media preset.
 
-A root-level media file, a show-level file in a season job, or any other item above the configured boundary is shallow and cannot become an executable file unit. Discovery also rejects a set containing both a directory and one of its descendants as separate units. These checks fail the complete run before rclone writes, preventing a root-level episode and `Season 03` from being transferred independently.
+The media presets only select those hierarchy boundaries. They do not parse or rename media, inspect episode or season completeness, or change transfer semantics. Transfer fingerprints and manifests contain regular files; symbolic links and special files are unsupported, empty directories are not guaranteed to be preserved, and POSIX ownership, permissions, extended attributes, and related metadata are outside the contract. This is not a filesystem-backup engine.
+
+A root-level file, a show-level file in a season job, or any other item above the configured boundary is shallow and cannot become an executable file unit. Atomic Sync does not currently expose per-file grouping. Discovery also rejects a set containing both a directory and one of its descendants as separate units. These checks fail the complete run before rclone writes, preventing a loose file and one of its related directories from being transferred independently.
 
 Immediately before each real or dry-run rclone operation, the Runner lists that source unit again, compares its paths, types, sizes, and modification times with the discovery fingerprint, and rechecks the stable window. It then gives rclone only the fingerprint's file paths through the temporary manifest, excluding files that arrive after revalidation. A new, removed, resized, retimestamped, or young file seen during revalidation stops the unit; `--min-age` independently rejects a too-young listed file when the stable window is positive. Every non-dry-run final inventory is checked against the same fingerprint, and move checks source residue afterward. These checks narrow the time-of-check/time-of-use race but are not a filesystem lock and cannot prove an in-place, equal-size rewrite that preserves its old modification time; production moves still require quiesced importers and download post-processing.
 
@@ -80,7 +83,7 @@ Immediately before each real or dry-run rclone operation, the Runner lists that 
 
 `job ID + unit path` is the assignment key. A deterministic FNV-1a weighted selection chooses an initial destination; SQLite persists it with `INSERT OR IGNORE`. Concurrent workers therefore converge on the same destination.
 
-After the first unit receives an assignment, the API placement-locks source, grouping boundary, destination names, paths, weights, and ordering. This prevents an edit from silently splitting an already assigned media unit across physical targets. Create a new job for a new placement policy.
+After the first unit receives an assignment, the API placement-locks source, grouping boundary, destination names, paths, weights, and ordering. This prevents an edit from silently splitting an already assigned directory unit across physical targets. Create a new job for a new placement policy.
 
 ## Execution concurrency
 

@@ -1,5 +1,5 @@
 # Atomic Sync
 
-Atomic Sync is a private, authenticated control plane for auditable rclone copy and move jobs. It does not provide bidirectional synchronization.
+Atomic Sync is an authenticated control plane for auditable rclone copy and move jobs. It transfers regular files organized as complete directory units, with general hierarchy rules and hierarchy-only media presets. It does not provide loose-file units, bidirectional synchronization, symbolic-link or special-file transfer, guaranteed empty-directory preservation, or filesystem-backup metadata semantics.
 
 - [Project documentation](https://github.com/yuanweize/Atomic-Sync)

@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/atomic-sync-wordmark.svg" width="560" alt="Atomic Sync">
 
-  <p><strong>Directory-aware media archiving, powered end to end by rclone.</strong></p>
+  <p><strong>Directory-unit file transfers, powered end to end by rclone.</strong></p>
 
   <p>
     <a href="README.zh-CN.md">简体中文</a> ·
@@ -19,14 +19,16 @@
 
 ---
 
-Atomic Sync is a focused control plane for moving mature media from a local or CIFS-mounted source branch to Google Drive. It discovers a complete movie, show, or season as one planning unit, waits until the whole unit is stable, pins its destination, and lets rclone perform the data transfer directly.
+Atomic Sync is a focused control plane for copying or moving mature directory trees from a local or CIFS-mounted source branch to a supported rclone destination. It groups regular files at a fixed directory boundary, waits until the whole unit is stable, pins its destination, and lets rclone perform the data transfer directly. General-purpose `folder` and `depth` policies work for project trees, datasets, exports, build artifacts, and other directory-organized content; `show` and `season` are convenient media-library hierarchy presets.
 
 This solves two problems that a single transfer command cannot:
 
-- a late subtitle or episode should reset the age of the complete directory, instead of leaving a show split across storage;
+- a late file should reset the age of its complete directory unit, instead of splitting one logical tree across storage;
 - the merged view from mergerfs can hide whether two same-named directories are fully archived, partially overlapping, conflicting, or empty.
 
-Atomic Sync does not replace rclone, proxy file contents, or implement a second cloud client. Rclone is the sole data plane; Atomic Sync provides policy, grouping, destination assignment, branch analysis, history, and a guarded web control plane around it.
+Atomic Sync does not replace rclone, proxy file contents, or implement a second cloud client. Rclone is the sole data plane; Atomic Sync provides policy, directory-unit grouping, destination assignment, branch analysis, history, and a guarded web control plane around it. It is deliberately not an individual-file synchronizer: loose files directly under `job.source` are above every supported unit boundary and make discovery fail closed.
+
+The payload contract is intentionally narrower than a filesystem backup. Atomic Sync inventories regular files inside directory units; it does not follow or preserve symbolic links or special files, guarantee empty-directory retention, or preserve ownership, permissions, extended attributes, and other POSIX metadata. The `show` and `season` presets only choose one- and two-level directory boundaries—they do not parse or rename media, or decide whether episodes and seasons are complete.
 
 ## Two modes, deliberately
 
@@ -37,18 +39,20 @@ Atomic Sync does not replace rclone, proxy file contents, or implement a second 
 
 There is no third `sync` mode. In rclone terminology, `sync` is a **one-way mirror** that may delete destination-only files; it is not bidirectional synchronization. Atomic Sync never needs that destructive destination-pruning behavior. True bidirectional replication is a different product category, and Syncthing is an independent implementation—not a layer built on rclone.
 
-## Why the directory is the unit
+## Why a directory tree is the unit
 
-`rclone move --min-age 30d` evaluates individual files. If a poster was written 40 days ago but the final episode arrived yesterday, the poster can move first and leave one logical show split across branches.
+`rclone move --min-age 30d` evaluates individual files. If one file was written 40 days ago but a related file arrived yesterday, the older file can move first and split one logical directory tree across branches.
 
-Atomic Sync evaluates the newest modification time inside the complete unit:
+Atomic Sync evaluates the newest modification time inside the complete directory unit. Choose a general policy or a media preset:
 
 ```text
-Movie grouping   → Movie/
-Show grouping    → Show/
-Season grouping  → Show/Season 01/
-Custom depth     → exactly N directory components
+Folder (`folder`)         → Project/                    general purpose
+Custom depth (`depth`)    → Org/Project/                general purpose, exactly N components
+TV show (`show`)          → Show/                       media preset
+TV season (`season`)      → Show/Season 01/             media preset
 ```
+
+Every transferable file must live below the selected boundary. For example, `folder` accepts `Project/report.pdf` but rejects a loose `report.pdf` directly under `job.source`; `depth: 2` requires a shape such as `Org/Project/report.pdf`. Atomic Sync currently has no root-file or per-file grouping mode.
 
 The default stable window is **30 days** (`2,592,000` seconds). A three-day window (`259,200` seconds) is appropriate only for a tightly scoped dry-run or canary; it is not the project default. When the window is positive, the same value is also passed to rclone as `--min-age <seconds>s` as a final age guard.
 
@@ -73,14 +77,15 @@ flowchart LR
 - **Rclone all the way down.** Retries, provider pacing, resumable transfers, checks, and Drive behavior stay in the mature rclone engine.
 - **Direct final-path I/O.** Each unit is transferred once, straight to its assigned final destination.
 - **No destination mirror deletion.** Neither mode invokes rclone `sync`.
-- **Real dry-run by default.** The same rclone operation checks both endpoints with `--dry-run`; source and destination media objects are unchanged, though rclone may refresh OAuth tokens in its dedicated config.
+- **Real dry-run by default.** The same rclone operation checks both endpoints with `--dry-run`; source and destination data objects are unchanged, though rclone may refresh OAuth tokens in its dedicated config.
 - **Fail-closed unit discovery.** Shallow files, path traversal, ambiguous parent/child units, endpoint overlap, and reserved internal paths stop execution.
 - **Immutable conflict handling.** The default policy stops on an existing unit; the opt-in merge policy adds missing files without overwriting a different destination object.
 - **Deterministic placement.** Weighted destination assignments are persisted in SQLite and reused across retries.
 - **Bounded concurrency.** Job workers, process-wide rclone concurrency, transfers, checkers, and provider transactions are separately limited.
+- **Guided bilingual editor.** Human-readable stable windows, visible multi-destination routing, media presets, progressive advanced controls, and a live behavior summary reduce configuration guesswork.
 - **Hardened deployment.** The reference container runs as UID/GID 1000 with a read-only root filesystem, zero capabilities, and `no-new-privileges`.
 
-Direct transfer is intentional. A cross-provider move is not an ACID directory rename: rclone transfers and accounts for objects individually, and an interruption can leave a partially completed unit. Immediately before rclone starts, Atomic Sync re-lists the source and requires it to match the discovery fingerprint. It writes those discovered file paths to a temporary `--files-from-raw` manifest, so rclone transfers exactly that set instead of sweeping in a file that arrives after revalidation. The manifest is deleted when the operation ends; it is control data, not staging or a media copy. After every non-dry-run copy or move, Atomic Sync lists the final destination and requires every discovered file path and size to be present; move then checks source residue. This avoids a second content transfer and can reduce repeated source traversal, but the metadata closure does not lock writers or prove an in-place, equal-size rewrite that preserves its old modification time. Production moves still require quiesced writers.
+Direct transfer is intentional. A cross-provider move is not an ACID directory rename: rclone transfers and accounts for objects individually, and an interruption can leave a partially completed unit. Immediately before rclone starts, Atomic Sync re-lists the source and requires it to match the discovery fingerprint. It writes those discovered file paths to a temporary `--files-from-raw` manifest, so rclone transfers exactly that set instead of sweeping in a file that arrives after revalidation. The manifest is deleted when the operation ends; it is control data, not staging or a payload copy. After every non-dry-run copy or move, Atomic Sync lists the final destination and requires every discovered file path and size to be present; move then checks source residue. This avoids a second content transfer and can reduce repeated source traversal, but the metadata closure does not lock writers or prove an in-place, equal-size rewrite that preserves its old modification time. Production moves still require quiesced writers.
 
 ## Branch-aware archive status
 
@@ -111,11 +116,13 @@ cp /path/to/rclone.conf rclone/rclone.conf
 cp .env.example .env
 ```
 
-Generate a token of at least 32 characters and add it to `.env`:
+Generate an application API token of at least 32 characters and add it to `.env`:
 
 ```bash
 openssl rand -hex 32
 ```
+
+This is an Atomic Sync Bearer token, not your operating-system, Tailscale, storage, or rclone password. The reference container listens on a non-loopback address internally, so it requires the token even when Docker publishes the port only on loopback or a Tailscale address. Only an application process whose own `ATOMIC_LISTEN` is explicitly loopback may omit it. Listening directly on a Tailscale IP is still non-loopback and requires a token of at least 32 characters.
 
 Prepare the two writable application paths. Rclone needs its dedicated config directory to persist OAuth refreshes by temporary file and atomic rename; never mount a shared host-global configuration.
 
@@ -127,7 +134,7 @@ docker compose -f compose.yaml -f compose.dev.yaml up -d --build atomic-sync
 docker compose ps atomic-sync
 ```
 
-Open `http://127.0.0.1:8088`, enter the API token, and start with a paused dry-run job. The reference Compose file mounts `/sources/media` read-only. This safely supports `copy` and dry-run planning for either mode; a real `move` requires an explicit, reviewed source-mount change described in [Operations](docs/OPERATIONS.md).
+Open `http://127.0.0.1:8088`, enter the API token, and start with a paused dry-run job. The reference Compose file mounts `/sources/media` read-only; that container path is only an example mount name and does not restrict the engine to media. This safely supports `copy` and dry-run planning for either mode; a real `move` requires an explicit, reviewed source-mount change described in [Operations](docs/OPERATIONS.md).
 
 ### Minimal safe job
 
@@ -161,7 +168,7 @@ Release tags publish signed `linux/amd64` and `linux/arm64` images with SBOM and
 ```yaml
 services:
   atomic-sync:
-    image: ghcr.io/yuanweize/atomic-sync:0.2.0@sha256:<release-digest>
+    image: ghcr.io/yuanweize/atomic-sync:0.3.0@sha256:<release-digest>
 ```
 
 Validate the fully merged Compose model, then recreate only this service in a shared stack:
@@ -199,12 +206,12 @@ Use `1/1/1/1` for a quota-sensitive dry-run canary. Before tuning for maximum Dr
 
 ## Security boundaries
 
-- The reference/production deployment requires a Bearer token. Only an explicitly loopback-bound development process may run without one; non-loopback listeners reject a missing or short token.
+- The reference/production deployment requires an Atomic Sync Bearer token of at least 32 characters. Only an application process explicitly bound to loopback may run without one; a direct Tailscale-IP listener is non-loopback and still requires the token.
 - The browser stores the token in `sessionStorage`, not a URL or persistent local-storage key.
 - Rclone is executed with an argument vector, never shell interpolation.
 - Local sources are restricted below `/sources`; local destinations are restricted below `/destinations`; remote sources are rejected.
 - Equal or nested paths across jobs are rejected, and placement-defining fields lock after the first assignment.
-- The API token is administrative access to every destination remote in the mounted rclone configuration.
+- The API token is an application-specific administrative secret—not a system or Tailscale password—and grants access to every destination remote in the mounted rclone configuration.
 - Real `move` mode is destructive. Container write permission, job configuration, explicit confirmation, and writer quiescence are separate operator responsibilities.
 
 SQLite is designed for one Atomic Sync process. Do not run multiple replicas against the same database.
